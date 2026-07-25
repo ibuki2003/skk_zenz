@@ -1134,6 +1134,9 @@ dependencies = [
 [[package]]
 name = "skk-zenz-fcitx5"
 version = "0.1.0"
+dependencies = [
+ "skk-zenz-backend",
+]
 
 [[package]]
 name = "slab"

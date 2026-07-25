@@ -3,12 +3,19 @@ project(skk-zenz VERSION 0.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 find_package(Fcitx5Core REQUIRED)
+find_package(OpenMP REQUIRED)
 include("${FCITX_INSTALL_CMAKECONFIG_DIR}/Fcitx5Utils/Fcitx5CompilerSettings.cmake")
 
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
 
 set(RUST_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target")
 set(RUST_LIBRARY "${RUST_TARGET_DIR}/release/libskk_zenz_fcitx5.a")
+file(
+    GLOB_RECURSE RUST_SOURCES
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/crates/fcitx5-addon/src/*.rs"
+    "${CMAKE_CURRENT_SOURCE_DIR}/crates/skk-zenz-backend/src/*.rs"
+)
 
 add_custom_command(
     OUTPUT "${RUST_LIBRARY}"
@@ -20,8 +27,10 @@ add_custom_command(
         --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.lock"
         "${CMAKE_CURRENT_SOURCE_DIR}/crates/fcitx5-addon/Cargo.toml"
-        "${CMAKE_CURRENT_SOURCE_DIR}/crates/fcitx5-addon/src/lib.rs"
+        "${CMAKE_CURRENT_SOURCE_DIR}/crates/skk-zenz-backend/Cargo.toml"
+        ${RUST_SOURCES}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Building the Rust core"
     VERBATIM
@@ -34,7 +43,10 @@ add_library(
     "${RUST_LIBRARY}"
 )
 add_dependencies(skk-zenz skk-zenz-rust)
-target_link_libraries(skk-zenz PRIVATE Fcitx5::Core "${RUST_LIBRARY}")
+target_link_libraries(
+    skk-zenz
+    PRIVATE Fcitx5::Core OpenMP::OpenMP_CXX "${RUST_LIBRARY}"
+)
 set_target_properties(skk-zenz PROPERTIES PREFIX "")
 
 configure_file(

@@ -6,3 +6,6 @@ license.workspace = true
 
 [lib]
 crate-type = ["staticlib"]
+
+[dependencies]
+skk-zenz-backend = { path = "../skk-zenz-backend" }

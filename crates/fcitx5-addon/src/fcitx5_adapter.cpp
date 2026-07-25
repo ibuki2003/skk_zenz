@@ -1,148 +1,320 @@
+#include <cstddef>
 #include <cstdint>
-#include <iomanip>
+#include <functional>
 #include <memory>
-#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <fcitx/addonfactory.h>
 #include <fcitx/addonmanager.h>
+#include <fcitx/candidatelist.h>
 #include <fcitx/event.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputmethodengine.h>
+#include <fcitx/inputpanel.h>
 #include <fcitx/instance.h>
 #include <fcitx/surroundingtext.h>
+#include <fcitx/text.h>
 #include <fcitx-utils/key.h>
 
-extern "C" void skk_zenz_log_key(
-    const char *uuid, const char *key, bool release);
-extern "C" void skk_zenz_handle_unconsumed_key(
-    const char *uuid, bool release, bool isBackspace, bool ignore,
-    const char *append);
-extern "C" void skk_zenz_handle_commit(
-    const char *uuid, const char *text, bool hasCursor,
-    std::uint32_t cursor);
-extern "C" void skk_zenz_handle_surrounding_text(
-    const char *uuid, bool valid, const char *text, std::uint32_t cursor,
-    std::uint32_t anchor);
+extern "C" {
+struct SkkZenzBackend;
+
+struct SkkZenzCandidate {
+    const char *text;
+    const char *annotation;
+};
+
+struct SkkZenzUpdate {
+    bool consumed;
+    const char *preedit;
+    const char *commit;
+    const SkkZenzCandidate *candidates;
+    std::size_t candidateCount;
+    std::size_t selectedCandidate;
+};
+
+using SkkZenzUpdateCallback =
+    void (*)(void *userData, const SkkZenzUpdate *update);
+
+SkkZenzBackend *skk_zenz_backend_new(const char *configPath);
+void skk_zenz_backend_free(SkkZenzBackend *backend);
+bool skk_zenz_backend_key(
+    SkkZenzBackend *backend, const char *text, const char *key,
+    std::uint16_t modifiers, void *userData, SkkZenzUpdateCallback callback);
+bool skk_zenz_backend_set_context(
+    SkkZenzBackend *backend, const char *context, void *userData,
+    SkkZenzUpdateCallback callback);
+bool skk_zenz_backend_focus_out(
+    SkkZenzBackend *backend, void *userData, SkkZenzUpdateCallback callback);
+bool skk_zenz_backend_reset(
+    SkkZenzBackend *backend, void *userData, SkkZenzUpdateCallback callback);
+bool skk_zenz_backend_select_candidate(
+    SkkZenzBackend *backend, std::size_t index, void *userData,
+    SkkZenzUpdateCallback callback);
+}
 
 namespace {
 
-std::string uuidString(const fcitx::InputContext *inputContext) {
-    std::ostringstream stream;
-    stream << std::hex << std::setfill('0');
-    for (const auto byte : inputContext->uuid()) {
-        stream << std::setw(2) << static_cast<unsigned int>(byte);
-    }
-    return stream.str();
-}
-
-void handleSurroundingText(fcitx::InputContext *inputContext) {
-    const auto uuid = uuidString(inputContext);
-    const auto &surroundingText = inputContext->surroundingText();
-    skk_zenz_handle_surrounding_text(
-        uuid.c_str(), surroundingText.isValid(),
-        surroundingText.text().c_str(), surroundingText.cursor(),
-        surroundingText.anchor());
-}
-
-void logKeyEvent(fcitx::KeyEvent &event) {
-    const auto uuid = uuidString(event.inputContext());
-    const auto keyName = event.key().toString();
-    skk_zenz_log_key(
-        uuid.c_str(), keyName.c_str(), event.isRelease());
-}
-
-void handleUnconsumedKeyEvent(fcitx::KeyEvent &event) {
-    if (event.accepted()) {
-        return;
+class CallbackCandidate final : public fcitx::CandidateWord {
+public:
+    CallbackCandidate(
+        fcitx::Text text, fcitx::Text comment,
+        std::function<void(fcitx::InputContext *)> callback)
+        : CandidateWord(std::move(text)), callback_(std::move(callback)) {
+        setComment(std::move(comment));
     }
 
-    const auto &key = event.key();
-    const auto uuid = uuidString(event.inputContext());
-    const auto ignore =
-        key.sym() == FcitxKey_Shift_L || key.sym() == FcitxKey_Shift_R ||
-        key.sym() == FcitxKey_Control_L ||
-        key.sym() == FcitxKey_Control_R;
+    void select(fcitx::InputContext *inputContext) const override {
+        callback_(inputContext);
+    }
 
-    // A normalized printable key has no remaining modifier. Rust performs
-    // the final one-character/control-character validation.
-    const auto append =
-        key.hasModifier() ? std::string{} :
-                            fcitx::Key::keySymToUTF8(key.sym());
-    skk_zenz_handle_unconsumed_key(
-        uuid.c_str(), event.isRelease(),
-        key.sym() == FcitxKey_BackSpace, ignore, append.c_str());
+private:
+    std::function<void(fcitx::InputContext *)> callback_;
+};
+
+struct UpdateTarget {
+    class SkkZenzEngine *engine;
+    fcitx::InputContext *inputContext;
+    fcitx::KeyEvent *keyEvent;
+};
+
+std::uint16_t backendModifiers(fcitx::KeyStates states) {
+    std::uint16_t result = 0;
+    if (states.test(fcitx::KeyState::Shift)) {
+        result |= 1U << 0;
+    }
+    if (states.test(fcitx::KeyState::Ctrl)) {
+        result |= 1U << 1;
+    }
+    if (states.test(fcitx::KeyState::Alt)) {
+        result |= 1U << 2;
+    }
+    if (states.test(fcitx::KeyState::Meta)) {
+        result |= 1U << 3;
+    }
+    if (states.test(fcitx::KeyState::Super) ||
+        states.test(fcitx::KeyState::Super2)) {
+        result |= 1U << 4;
+    }
+    if (states.test(fcitx::KeyState::Hyper) ||
+        states.test(fcitx::KeyState::Hyper2)) {
+        result |= 1U << 5;
+    }
+    if (states.test(fcitx::KeyState::Mod5)) {
+        result |= 1U << 6;
+    }
+    return result;
+}
+
+std::string logicalKeyName(const fcitx::Key &key) {
+    auto name = fcitx::Key::keySymToUTF8(key.sym());
+    if (name.size() == 1 && name[0] >= 'A' && name[0] <= 'Z') {
+        name[0] += 'a' - 'A';
+        return name;
+    }
+    if (!name.empty() &&
+        static_cast<unsigned char>(name.front()) >= 0x20 &&
+        name.front() != '\x7f') {
+        return name;
+    }
+    return fcitx::Key(key.sym()).toString();
+}
+
+std::string inputText(const fcitx::Key &key) {
+    const auto states = key.states();
+    if (states.test(fcitx::KeyState::Ctrl) ||
+        states.test(fcitx::KeyState::Alt) ||
+        states.test(fcitx::KeyState::Meta) ||
+        states.test(fcitx::KeyState::Super) ||
+        states.test(fcitx::KeyState::Super2) ||
+        states.test(fcitx::KeyState::Hyper) ||
+        states.test(fcitx::KeyState::Hyper2)) {
+        return {};
+    }
+    auto text = fcitx::Key::keySymToUTF8(key.sym());
+    if (!text.empty() &&
+        (static_cast<unsigned char>(text.front()) < 0x20 ||
+         text.front() == '\x7f')) {
+        return {};
+    }
+    return text;
 }
 
 class SkkZenzEngine final : public fcitx::InputMethodEngineV2 {
 public:
-    explicit SkkZenzEngine(fcitx::Instance *instance) {
-        eventHandlers_.emplace_back(instance->watchEvent(
-            fcitx::EventType::InputContextKeyEvent,
-            fcitx::EventWatcherPhase::PreInputMethod,
-            [](fcitx::Event &event) {
-                logKeyEvent(static_cast<fcitx::KeyEvent &>(event));
-            }));
-
-        eventHandlers_.emplace_back(instance->watchEvent(
-            fcitx::EventType::InputContextKeyEvent,
-            fcitx::EventWatcherPhase::PostInputMethod,
-            [](fcitx::Event &event) {
-                handleUnconsumedKeyEvent(
-                    static_cast<fcitx::KeyEvent &>(event));
-            }));
-
-        eventHandlers_.emplace_back(instance->watchEvent(
-            fcitx::EventType::InputContextCommitString,
-            fcitx::EventWatcherPhase::Default, [](fcitx::Event &event) {
-                auto &commitEvent =
-                    static_cast<fcitx::CommitStringEvent &>(event);
-                const auto uuid =
-                    uuidString(commitEvent.inputContext());
-                skk_zenz_handle_commit(
-                    uuid.c_str(), commitEvent.text().c_str(), false, 0);
-            }));
-
-        eventHandlers_.emplace_back(instance->watchEvent(
-            fcitx::EventType::InputContextCommitStringWithCursor,
-            fcitx::EventWatcherPhase::Default, [](fcitx::Event &event) {
-                auto &commitEvent =
-                    static_cast<fcitx::CommitStringWithCursorEvent &>(event);
-                const auto uuid =
-                    uuidString(commitEvent.inputContext());
-                skk_zenz_handle_commit(
-                    uuid.c_str(), commitEvent.text().c_str(), true,
-                    static_cast<std::uint32_t>(commitEvent.cursor()));
-            }));
-
-        eventHandlers_.emplace_back(instance->watchEvent(
-            fcitx::EventType::InputContextSurroundingTextUpdated,
-            fcitx::EventWatcherPhase::Default, [](fcitx::Event &event) {
-                auto &inputContextEvent =
-                    static_cast<fcitx::InputContextEvent &>(event);
-                handleSurroundingText(inputContextEvent.inputContext());
-            }));
+    explicit SkkZenzEngine(fcitx::Instance *instance)
+        : backend_(skk_zenz_backend_new("skk-zenz.toml")) {
+        FCITX_UNUSED(instance);
     }
 
-    void keyEvent(const fcitx::InputMethodEntry &entry,
-                  fcitx::KeyEvent &event) override {
-        FCITX_UNUSED(entry);
+    ~SkkZenzEngine() override { skk_zenz_backend_free(backend_); }
 
-        if (!event.isRelease()) {
-            // Workaround: some Wayland clients only publish usable
-            // surrounding text after an IM sends a commit_string request.
-            // An empty string leaves the document unchanged.
-            event.inputContext()->commitString("");
+    void keyEvent(
+        const fcitx::InputMethodEntry &entry,
+        fcitx::KeyEvent &event) override {
+        FCITX_UNUSED(entry);
+        if (!backend_ || event.isRelease()) {
+            return;
         }
 
-        // Observe only: let every key continue to the application.
+        const auto candidateIndex = event.key().digitSelection();
+        if (candidateIndex >= 0 && candidateIndex < 9 &&
+            candidatePageOffset_ +
+                    static_cast<std::size_t>(candidateIndex) <
+                candidateCount_) {
+            selectCandidate(
+                event.inputContext(),
+                candidatePageOffset_ +
+                    static_cast<std::size_t>(candidateIndex));
+            event.filterAndAccept();
+            return;
+        }
+
+        synchronizeContext(event.inputContext());
+        const auto &rawKey = event.rawKey();
+        const auto text = inputText(rawKey);
+        const auto keyName = logicalKeyName(event.key());
+        UpdateTarget target{this, event.inputContext(), &event};
+        skk_zenz_backend_key(
+            backend_, text.empty() ? nullptr : text.c_str(), keyName.c_str(),
+            backendModifiers(rawKey.states()), &target, updateCallback);
+        if (!event.accepted() && text.empty() && !rawKey.isModifier()) {
+            skk_zenz_backend_set_context(
+                backend_, "", nullptr, discardUpdate);
+        }
+    }
+
+    void deactivate(
+        const fcitx::InputMethodEntry &entry,
+        fcitx::InputContextEvent &event) override {
+        FCITX_UNUSED(entry);
+        focusOut(event.inputContext());
+    }
+
+    void reset(
+        const fcitx::InputMethodEntry &entry,
+        fcitx::InputContextEvent &event) override {
+        FCITX_UNUSED(entry);
+        if (!backend_) {
+            return;
+        }
+        UpdateTarget target{this, event.inputContext(), nullptr};
+        skk_zenz_backend_reset(backend_, &target, updateCallback);
+    }
+
+    void applyUpdate(
+        fcitx::InputContext *inputContext, fcitx::KeyEvent *keyEvent,
+        const SkkZenzUpdate &update) {
+        if (update.commit) {
+            inputContext->commitString(update.commit);
+        }
+
+        auto &panel = inputContext->inputPanel();
+        const fcitx::Text preedit(update.preedit);
+        panel.setClientPreedit(preedit);
+        panel.setPreedit(preedit);
+
+        if (update.candidateCount == 0) {
+            candidateCount_ = 0;
+            candidatePageOffset_ = 0;
+            panel.setCandidateList(nullptr);
+        } else {
+            candidateCount_ = update.candidateCount;
+            candidatePageOffset_ =
+                update.selectedCandidate < update.candidateCount
+                    ? update.selectedCandidate / 9 * 9
+                    : 0;
+            auto candidates = std::make_unique<fcitx::CommonCandidateList>();
+            candidates->setPageSize(9);
+            candidates->setLayoutHint(
+                fcitx::CandidateLayoutHint::Vertical);
+            candidates->setSelectionKey({
+                fcitx::Key(FcitxKey_1), fcitx::Key(FcitxKey_2),
+                fcitx::Key(FcitxKey_3), fcitx::Key(FcitxKey_4),
+                fcitx::Key(FcitxKey_5), fcitx::Key(FcitxKey_6),
+                fcitx::Key(FcitxKey_7), fcitx::Key(FcitxKey_8),
+                fcitx::Key(FcitxKey_9),
+            });
+            for (std::size_t index = 0; index < update.candidateCount; ++index) {
+                const auto &candidate = update.candidates[index];
+                candidates->append<CallbackCandidate>(
+                    fcitx::Text(candidate.text),
+                    fcitx::Text(
+                        candidate.annotation ? candidate.annotation : ""),
+                    [this, index](fcitx::InputContext *context) {
+                        selectCandidate(context, index);
+                    });
+            }
+            if (update.selectedCandidate < update.candidateCount) {
+                candidates->setGlobalCursorIndex(
+                    static_cast<int>(update.selectedCandidate));
+            }
+            panel.setCandidateList(std::move(candidates));
+        }
+
+        inputContext->updatePreedit();
+        inputContext->updateUserInterface(
+            fcitx::UserInterfaceComponent::InputPanel);
+        if (keyEvent && update.consumed) {
+            keyEvent->filterAndAccept();
+        }
     }
 
 private:
-    std::vector<std::unique_ptr<
-        fcitx::HandlerTableEntry<fcitx::EventHandler>>>
-        eventHandlers_;
+    static void updateCallback(
+        void *userData, const SkkZenzUpdate *update) {
+        auto *target = static_cast<UpdateTarget *>(userData);
+        target->engine->applyUpdate(
+            target->inputContext, target->keyEvent, *update);
+    }
+
+    static void discardUpdate(
+        void *userData, const SkkZenzUpdate *update) {
+        FCITX_UNUSED(userData);
+        FCITX_UNUSED(update);
+    }
+
+    void synchronizeContext(fcitx::InputContext *inputContext) {
+        const auto &surrounding = inputContext->surroundingText();
+        if (!surrounding.isValid()) {
+            return;
+        }
+        const auto &text = surrounding.text();
+        const auto cursor = static_cast<std::size_t>(surrounding.cursor());
+        auto iterator = text.begin();
+        for (std::size_t index = 0;
+             index < cursor && iterator != text.end(); ++index) {
+            const auto byte = static_cast<unsigned char>(*iterator);
+            iterator += byte < 0x80   ? 1
+                        : byte < 0xe0 ? 2
+                        : byte < 0xf0 ? 3
+                                      : 4;
+        }
+        const std::string left(text.begin(), iterator);
+        skk_zenz_backend_set_context(
+            backend_, left.c_str(), nullptr, discardUpdate);
+    }
+
+    void focusOut(fcitx::InputContext *inputContext) {
+        if (!backend_) {
+            return;
+        }
+        UpdateTarget target{this, inputContext, nullptr};
+        skk_zenz_backend_focus_out(backend_, &target, updateCallback);
+    }
+
+    void selectCandidate(
+        fcitx::InputContext *inputContext, std::size_t index) {
+        UpdateTarget target{this, inputContext, nullptr};
+        skk_zenz_backend_select_candidate(
+            backend_, index, &target, updateCallback);
+    }
+
+    SkkZenzBackend *backend_;
+    std::size_t candidateCount_ = 0;
+    std::size_t candidatePageOffset_ = 0;
 };
 
 class SkkZenzEngineFactory final : public fcitx::AddonFactory {

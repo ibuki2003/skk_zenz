@@ -45,33 +45,30 @@ SKKを現代的にしたいな!というモチベでPoCを作ってみます
   - [ ] 後回し: system/user辞書の自動reload監視
   - [ ] 後回し: モデルの自動ダウンロード
   - [ ] 後回し: 複数候補のバッチスコアリング最適化
-- [ ] frontendの実装
-  - [ ] fcitx5固有のキーイベント、preedit、候補UIを実装する
-  - [ ] backendの`prepare`を入力中、`lookup`を変換開始時に呼び出す
+- [x] frontendの実装
+  - [x] fcitx5固有のキーイベント、preedit、候補UIを実装する
+  - [x] backendの状態機械を接続し、入力中の`prepare`と変換開始時の`lookup`を呼び出す
 - [ ] 性能検証 (暇があればね)
   - 適当なテキストを用意して、オリジナル実装とのspace押下回数とか比較するんかな? 知らんけど
 
-## fcitx5 IM prototype
+## fcitx5 IM
 
-Rust製のログ処理を薄いC++ adapterから呼び出す、入力を素通しするIMです。
-UUIDごとにbest-effortな左文脈を保持し、印字可能なキーはappend、Backspaceはpop、
-それ以外は安全側でflushとして扱います。fcitx5から有効なsurrounding textを取得
-できた場合は、推測値をcursorより左の文脈で置き換えます。別のIMがキーを消費した
-場合は生のキーを推測に使わず、そのIMがcommitした確定文字列をappendします。
+薄いC++ adapterがfcitx5のキーイベントをRust backendへ渡し、返されたcommit、
+preedit、候補一覧をfcitx5へ反映します。変換候補はマウスでも選択できます。
+設定はfcitx5を起動したcwdの`skk-zenz.toml`から読み込みます。利用できる
+surrounding textがある場合は、各キー処理の直前にcursorより左を文脈として同期します。
 
 開発環境は `direnv allow` で読み込めます。通常のCargo成果物は `target/` に保持されるため、
 Rust部分は増分ビルドされます。
 
 ```console
 direnv allow
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-cmake --install build --prefix "$PWD/result"
+./build.sh
 ```
 
 成果物は `result/lib/fcitx5` と `result/share/fcitx5` 以下に配置されます。
 試す際は、次のように成果物をfcitx5の探索パスへ追加してからfcitx5を起動し、
-設定画面で `SKK Zenz (prototype)` を追加してください。
+設定画面で `SKK Zenz` を追加してください。
 
 ```console
 export XDG_DATA_DIRS="$PWD/result/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
@@ -79,10 +76,8 @@ export FCITX_ADDON_DIRS="$PWD/result/lib/fcitx5"
 fcitx5 -rd
 ```
 
-標準エラーには、キー入力をcyanの `[KEY]`、fcitx5から届いた周辺文脈をmagentaの
-`[SURROUNDING]`、推測文脈のappend/pop/flush/replaceをgreenの `[GUESSED]` として
-記録します（端末以外への出力または `NO_COLOR` 設定時は色なし）。各行の `ts_ms`
-はUnix epochからのミリ秒です。ウインドウを切り替えてもUUIDごとの推測値は保持します。
+backendを初期化できない場合や入力処理に失敗した場合は標準エラーへ原因を記録し、
+キー入力はアプリケーションへそのまま渡します。
 
 ## zenz inference benchmark
 
