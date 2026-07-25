@@ -44,14 +44,32 @@ impl UserDictionary {
         annotation: Option<&str>,
     ) -> Result<()> {
         let now = unix_timestamp()?;
+        let previous = self
+            .connection
+            .query_row(
+                "
+                SELECT frequency, updated_at
+                FROM candidates
+                WHERE input = ?1 AND okuri = ?2 AND text = ?3
+                ",
+                params![input, okuri.unwrap_or(""), text],
+                |row| Ok((row.get::<_, f64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        let frequency = previous.map_or(1.0, |(frequency, updated_at)| {
+            effective_frequency(frequency, updated_at, now, self.half_life_seconds) + 1.0
+        });
         self.connection.execute(
             "
-            INSERT INTO candidates (input, okuri, text, annotation, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5)
+            INSERT INTO candidates (input, okuri, text, annotation, frequency, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             ON CONFLICT (input, okuri, text)
-            DO UPDATE SET annotation = excluded.annotation
+            DO UPDATE SET
+                annotation = excluded.annotation,
+                frequency = excluded.frequency,
+                updated_at = excluded.updated_at
             ",
-            params![input, okuri.unwrap_or(""), text, annotation, now],
+            params![input, okuri.unwrap_or(""), text, annotation, frequency, now],
         )?;
         Ok(())
     }
@@ -198,5 +216,21 @@ mod tests {
         let candidates = dictionary.lookup_at("かな", None, 86_400).unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].recency, Some(1.0));
+    }
+
+    #[test]
+    fn registered_candidate_counts_as_a_use() {
+        let dictionary = UserDictionary::open(Path::new(":memory:"), 1.0).unwrap();
+        dictionary
+            .register("みだし", None, "登録語", Some("注釈"))
+            .unwrap();
+        let (annotation, frequency): (String, f64) = dictionary
+            .connection
+            .query_row("SELECT annotation, frequency FROM candidates", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(annotation, "注釈");
+        assert_eq!(frequency, 1.0);
     }
 }

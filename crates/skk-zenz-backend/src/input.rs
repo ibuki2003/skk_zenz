@@ -37,6 +37,7 @@ pub(crate) struct InputState {
     pub(crate) context: String,
     pub(crate) phase: Phase,
     pub(crate) direct_pending: String,
+    pub(crate) registrations: Vec<Registration>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -65,6 +66,16 @@ pub(crate) enum SelectionOrigin {
     Abbrev,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct Registration {
+    pub(crate) input: String,
+    pub(crate) okuri: Option<String>,
+    pub(crate) source_phase: Phase,
+    pub(crate) text: String,
+    pub(crate) mode: InputMode,
+    pub(crate) context_before: String,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Composition {
     output: String,
@@ -73,12 +84,17 @@ pub(crate) struct Composition {
 
 impl InputState {
     pub(crate) fn reset(&mut self) {
+        if let Some(registration) = self.registrations.first() {
+            self.mode = registration.mode;
+            self.context.clone_from(&registration.context_before);
+        }
         self.phase = Phase::Direct;
         self.direct_pending.clear();
+        self.registrations.clear();
     }
 
     pub(crate) fn preedit(&self) -> String {
-        match &self.phase {
+        let mut value = match &self.phase {
             Phase::Direct => self.direct_pending.clone(),
             Phase::Preedit { stem, okuri } => {
                 let mut value = format!("▽{}", stem.display());
@@ -95,7 +111,16 @@ impl InputState {
                 .get(*cursor)
                 .map(|candidate| format!("▼{}", candidate.output))
                 .unwrap_or_default(),
+        };
+        for registration in self.registrations.iter().rev() {
+            let mut header = registration.input.clone();
+            if let Some(okuri) = &registration.okuri {
+                header.push('*');
+                header.push_str(okuri);
+            }
+            value = format!("▼{header}【{}{value}】", registration.text);
         }
+        value
     }
 
     pub(crate) fn candidates(&self) -> Vec<Candidate> {
@@ -241,5 +266,40 @@ mod tests {
         };
         assert_eq!(state.preedit(), "▽skk-server");
         assert_eq!(state.speculative_input(), None);
+    }
+
+    #[test]
+    fn registration_preedit_wraps_nested_input() {
+        let source_phase = Phase::Preedit {
+            stem: Composition::from_output("かぱ".to_owned()),
+            okuri: None,
+        };
+        let mut state = InputState {
+            phase: Phase::Preedit {
+                stem: Composition::from_output("か".to_owned()),
+                okuri: None,
+            },
+            registrations: vec![Registration {
+                input: "かぱ".to_owned(),
+                okuri: None,
+                source_phase: source_phase.clone(),
+                text: "下".to_owned(),
+                mode: InputMode::Hiragana,
+                context_before: String::new(),
+            }],
+            ..InputState::default()
+        };
+        assert_eq!(state.preedit(), "▼かぱ【下▽か】");
+
+        state.registrations.push(Registration {
+            input: "か".to_owned(),
+            okuri: Some("え".to_owned()),
+            source_phase,
+            text: String::new(),
+            mode: InputMode::Hiragana,
+            context_before: "下".to_owned(),
+        });
+        state.phase = Phase::Direct;
+        assert_eq!(state.preedit(), "▼かぱ【下▼か*え【】】");
     }
 }

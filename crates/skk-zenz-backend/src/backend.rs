@@ -5,7 +5,8 @@ use crate::candidate::{Candidate, CandidateSource, DictionaryCandidate};
 use crate::config::{BackendConfig, CandidateOrderConfig, CandidateSortKey};
 use crate::dictionary::{Dictionary, SkkFileDictionary, UserDictionary, open_system_dictionaries};
 use crate::input::{
-    Composition, InputEvent, InputMode, InputState, InputUpdate, Phase, SelectionOrigin,
+    Composition, InputEvent, InputMode, InputState, InputUpdate, Phase, Registration,
+    SelectionOrigin,
 };
 use crate::keymap::{KeyEvent, Keymap, Modifiers};
 use crate::numeric::NumericInput;
@@ -68,9 +69,11 @@ impl Backend {
 
     pub fn handle_event(&mut self, event: InputEvent) -> Result<InputUpdate> {
         let prepare_speculatively = matches!(&event, InputEvent::Key(_));
-        let (consumed, commit) = match event {
+        let (consumed, mut commit) = match event {
             InputEvent::SetContext(context) => {
-                self.input_state.context = context;
+                if self.input_state.registrations.is_empty() {
+                    self.input_state.context = context;
+                }
                 (false, None)
             }
             InputEvent::Reset => {
@@ -88,6 +91,13 @@ impl Backend {
             }
             InputEvent::Key(event) => self.handle_key(event)?,
         };
+        if let Some(output) = commit.take() {
+            if let Some(registration) = self.input_state.registrations.last_mut() {
+                registration.text.push_str(&output);
+            } else {
+                commit = Some(output);
+            }
+        }
         if prepare_speculatively
             && commit.is_none()
             && self.current_order_uses_ai_score()
@@ -287,6 +297,22 @@ impl Backend {
             .get(&self.input_state.mode)
             .and_then(|keymap| keymap.lookup(&event))
             .map(str::to_owned);
+        if !self.input_state.registrations.is_empty()
+            && matches!(self.input_state.phase, Phase::Direct)
+        {
+            match command.as_deref() {
+                Some("abort") => return Ok(self.abort_registration()),
+                Some("delete") if self.input_state.direct_pending.is_empty() => {
+                    return Ok(self.delete_registration_text());
+                }
+                Some("commit" | "commit-unhandled")
+                    if self.input_state.direct_pending.is_empty() =>
+                {
+                    return self.finish_registration(command.as_deref());
+                }
+                _ => {}
+            }
+        }
         match std::mem::take(&mut self.input_state.phase) {
             Phase::Direct => self.handle_direct(event, command.as_deref()),
             Phase::Preedit { stem, okuri } => {
@@ -524,7 +550,7 @@ impl Backend {
                 }
                 let candidates = self.lookup_abbrev(&input)?;
                 if candidates.is_empty() {
-                    self.input_state.phase = Phase::Abbrev { input };
+                    self.begin_registration(input.clone(), None, Phase::Abbrev { input });
                 } else {
                     self.input_state.phase = Phase::Selecting {
                         input,
@@ -564,19 +590,17 @@ impl Backend {
         origin: SelectionOrigin,
     ) -> Result<(bool, Option<String>)> {
         if should_restore_preedit(command, cursor) {
-            self.input_state.phase = match origin {
-                SelectionOrigin::Preedit => Phase::Preedit {
-                    stem: Composition::from_output(input),
-                    okuri: okuri.map(Composition::from_output),
-                },
-                SelectionOrigin::Abbrev => Phase::Abbrev { input },
-            };
+            self.input_state.phase = selection_source_phase(input, okuri, origin);
             return Ok((true, None));
         }
         match command {
             Some("next-candidate") => {
                 if cursor + 1 < candidates.len() {
                     cursor += 1;
+                } else {
+                    let source_phase = selection_source_phase(input.clone(), okuri.clone(), origin);
+                    self.begin_registration(input, okuri, source_phase);
+                    return Ok((true, None));
                 }
             }
             Some("previous-candidate") => {
@@ -657,7 +681,7 @@ impl Backend {
         let context = self.input_state.context.clone();
         let candidates = self.lookup(&context, &input, okuri_text.as_deref())?;
         if candidates.is_empty() {
-            self.input_state.phase = Phase::Preedit { stem, okuri };
+            self.begin_registration(input, okuri_text, Phase::Preedit { stem, okuri });
         } else {
             self.input_state.phase = Phase::Selecting {
                 input,
@@ -668,6 +692,63 @@ impl Backend {
             };
         }
         Ok((true, None))
+    }
+
+    fn begin_registration(&mut self, input: String, okuri: Option<String>, source_phase: Phase) {
+        self.input_state.registrations.push(Registration {
+            input,
+            okuri,
+            source_phase,
+            text: String::new(),
+            mode: self.input_state.mode,
+            context_before: self.input_state.context.clone(),
+        });
+        self.input_state.phase = Phase::Direct;
+        self.input_state.direct_pending.clear();
+    }
+
+    fn abort_registration(&mut self) -> (bool, Option<String>) {
+        let Some(registration) = self.input_state.registrations.pop() else {
+            return (false, None);
+        };
+        self.input_state.mode = registration.mode;
+        self.input_state.context = registration.context_before;
+        self.input_state.phase = registration.source_phase;
+        self.input_state.direct_pending.clear();
+        (true, None)
+    }
+
+    fn delete_registration_text(&mut self) -> (bool, Option<String>) {
+        let Some(registration) = self.input_state.registrations.last_mut() else {
+            return (false, None);
+        };
+        if registration.text.pop().is_some() {
+            self.input_state.context.pop();
+        }
+        (true, None)
+    }
+
+    fn finish_registration(&mut self, command: Option<&str>) -> Result<(bool, Option<String>)> {
+        let Some(registration) = self.input_state.registrations.pop() else {
+            return Ok((false, None));
+        };
+        if registration.text.is_empty() {
+            self.input_state.mode = registration.mode;
+            self.input_state.context = registration.context_before;
+            self.input_state.phase = registration.source_phase;
+            return Ok((true, None));
+        }
+
+        self.register(
+            &registration.input,
+            registration.okuri.as_deref(),
+            &registration.text,
+            None,
+        )?;
+        self.input_state.mode = registration.mode;
+        self.input_state.phase = Phase::Direct;
+        let nested = !self.input_state.registrations.is_empty();
+        Ok((nested || command == Some("commit"), Some(registration.text)))
     }
 
     fn finish_direct(&mut self) -> Option<String> {
@@ -744,6 +825,16 @@ fn should_start_okuri(event: &KeyEvent, command: Option<&str>, stem: &Compositio
 fn should_restore_preedit(command: Option<&str>, cursor: usize) -> bool {
     matches!(command, Some("abort" | "delete"))
         || command == Some("previous-candidate") && cursor == 0
+}
+
+fn selection_source_phase(input: String, okuri: Option<String>, origin: SelectionOrigin) -> Phase {
+    match origin {
+        SelectionOrigin::Preedit => Phase::Preedit {
+            stem: Composition::from_output(input),
+            okuri: okuri.map(Composition::from_output),
+        },
+        SelectionOrigin::Abbrev => Phase::Abbrev { input },
+    }
 }
 
 fn should_commit_selection_for_event(event: &KeyEvent, command: Option<&str>) -> bool {
