@@ -2,96 +2,52 @@
 
 SKKを現代的にしたいな!というモチベでPoCを作ってみます
 
-- 左文脈を活用した変換候補のreranking
-- 送りがなの母音の活用
-
-以下、細かい構成の構想:
+## アピールポイント (独自の機能)
 
 - Zenzaiを利用
   - 左文脈を活用した変換候補のreranking (・作成?) に使用
-  - linux desktopではサポートが不十分らしい?ので、fcitx5の情報を収集しつつ、frontendが直前の情報を記憶しておきfallbackとする
+  - fcitx5のsurrounding textの実装状況がまだまだ不十分なので、非対応アプリでは直前の情報を記憶しておきfallbackとしています
 - 送りがなの母音の活用
   - libskkでは参照されない、送りがなの母音情報を使って変換候補をフィルタする
   - system辞書は無改造のまま使えるようにする。user辞書には、recent usedとして母音つきのエントリを記録する
-- エントリのソートは、(from_user?: bool, ai_rank: float)をkeyとするイメージ
 - user辞書
-  - sqliteとかのがいい気がしてる。
-  - 使用したエントリをsystem辞書からコピーする挙動は残す
-  - recencyの情報はrerankのためにあまり重要ではないはず (使用しない、ではなく、persistentにしない) 使用回数くらい保存しとく?
-  - 明示辞書登録も当然記録する
+  - sqliteを使用します
+  - 毎回並び換え&全文保存を避けるようにしています
+- エントリのソートは、(from_user?: bool, ai_rank: float)をkeyとするイメージ
+  - zenzとuser recencyの使い分けが使いやすさに直結するはずなので、要調整。
 
-## roadmap
+## roadmap (todo)
 
-- [x] fcitx5のIMの仮実装
-  - 左文脈の取得の可否を実験する
-- [x] zenzの組み込み、ランタイムとハードウェアごとのレイテンシを確認
-  - space押下前から投機実行できるといいのですが…
-- [ ] backendの実装
-  - [x] `skk-zenz-backend`を通常のCargo依存として提供する
-  - [x] SKK system辞書をbackendで読み込み、送りあり・送りなし候補を検索する
-  - [x] SQLite user辞書へ登録・選択・削除・使用回数を保存する
-  - [x] 永続化しないrecencyを候補順位へ反映する
-  - [x] zenzで候補をスコアリングし、user辞書・recency・lossで並べる
-  - [x] `prepare(context, input)`で変換前にKV cacheを投機更新する
-  - [x] `lookup(context, input, okuri)`を提供する
-  - [x] backendのコア機能を試せるCLIを提供する
-  - [x] TOML設定ファイルからモデル・辞書・推論設定を読み込む
-  - [x] libskkのrule定義とincludeを読むstatelessなローマ字・かな変換API
-  - [x] frontend非依存のキーイベント型とlibskk互換keymap loader
-  - [x] 直接入力・preedit・候補選択の状態機械をbackendに保持
-  - [ ] 後回し: 数値変換、辞書内Lisp式などの特殊変換
-  - [ ] 後回し: `complete()`による見出し補完
-  - [ ] 後回し: skkserv、CDB辞書
-  - [ ] 後回し: system/user辞書の自動reload監視
-  - [ ] 後回し: モデルの自動ダウンロード
-  - [ ] 後回し: 複数候補のバッチスコアリング最適化
-- [x] frontendの実装
-  - [x] fcitx5固有のキーイベント、preedit、候補UIを実装する
-  - [x] backendの状態機械を接続し、入力中の`prepare`と変換開始時の`lookup`を呼び出す
-- [ ] 性能検証 (暇があればね)
-  - 適当なテキストを用意して、オリジナル実装とのspace押下回数とか比較するんかな? 知らんけど
+優先度順:
 
-## fcitx5 IM
+- 設定ファイルをちゃんと読む
+  libSKK実装のコンフィグも読めるようにする(rom-kanaとか)
+- abbrモード
+- モデルの自動ダウンロード
+- 最適化
+- nixでビルドしてhome-managerから呼べるようにする
+- `complete()`による見出し補完
+- 数値変換、辞書内Lisp式などの特殊変換
+- skkserv、CDB辞書
+- system/user辞書の自動reload監視(?)
+- 性能検証
+  適当なテキストを用意して、オリジナル実装とのspace押下回数とか比較するんかな? 知らんけど
 
-薄いC++ adapterがfcitx5のキーイベントをRust backendへ渡し、返されたcommit、
-preedit、候補一覧をfcitx5へ反映します。変換候補はマウスでも選択できます。
-設定はfcitx5を起動したcwdの`skk-zenz.toml`から読み込みます。利用できる
-surrounding textがある場合は、各キー処理の直前にcursorより左を文脈として同期します。
+## 構成
 
-開発環境は `direnv allow` で読み込めます。通常のCargo成果物は `target/` に保持されるため、
-Rust部分は増分ビルドされます。
+### fcitx5 frontend
 
-```console
-direnv allow
-./build.sh
-```
+薄いC++ adapterがfcitx5とcommunicateし、surrounding textとともにbackendに投げて結果をもらって表示します
 
-成果物は `result/lib/fcitx5` と `result/share/fcitx5` 以下に配置されます。
-試す際は、次のように成果物をfcitx5の探索パスへ追加してからfcitx5を起動し、
-設定画面で `SKK Zenz` を追加してください。
+### backend
 
-```console
-export XDG_DATA_DIRS="$PWD/result/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
-export FCITX_ADDON_DIRS="$PWD/result/lib/fcitx5"
-fcitx5 -rd
-```
+libskkに相当します。候補を辞書ファイルから生成し、結果を返します
+configやtable、辞書の参照はすべてbackendがやります
 
-backendを初期化できない場合や入力処理に失敗した場合は標準エラーへ原因を記録し、
-キー入力はアプリケーションへそのまま渡します。
+### zenz inference benchmark
 
-## zenz inference benchmark
-
-`skk-zenz-bench` は zenz v3.2 xsmall/small の Q5_K_M GGUF を Hugging Face から
-ダウンロード・キャッシュし、入力中にKV cacheを更新する `speculative` と変換開始時に
-初めて更新する `baseline` を比較します。既知の出力はteacher-forcingでloss
-（出力トークンの負の対数尤度）を算出します。
-
-```console
-cargo run --release -p skk-zenz-bench -- --model both
-```
-
-既定の操作列は `crates/zenz-bench/cases.script` にあります。各行を最初の空白で
-コマンドと値に分割し、値は残りをそのまま使用します。
+zenzの評価速度とか精度を調べるベンチマークです
+操作列をscriptとして入力します
 
 ```text
 context 朝起きて窓を開けました。
@@ -101,31 +57,15 @@ eval 今日はいい天気です
 eval 京は良い転機です
 ```
 
-`context` はKV cacheを破棄してグループを開始し、`input` は未確定入力全体を置き換え、
-`eval` は現在のcontext/inputに対して出力を評価します。同じ形式のファイルを
-`--script` で指定でき、`--runs` 回スクリプト全体を再生して各行と全体の統計を表示します。
+baseline/speculativeでkv cacheまわりの最適化の効果を確認する。
 
-```console
-cargo run --release -p skk-zenz-bench -- \
-  --model small \
-  --script path/to/cases.script \
-  --runs 10
-```
+### backend core CLI
 
-CUDA または Vulkan を使う場合は、それぞれ `--features cuda` または
-`--features vulkan` を追加します。ローカルの GGUF は `--model-path` で指定できます。
+backendのコア機能を確認する最低限のcli
 
-## backend core CLI
+## 設定ファイル
 
-`skk-zenz-backend`はモデル、SKK system辞書、SQLite user辞書を読み込み、操作列で
-コア機能を確認できます。
-
-```console
-cargo run --release -p skk-zenz-backend -- --script path/to/backend.script
-```
-
-既定ではcwdの`skk-zenz.toml`を読みます。別の設定ファイルは`--config`で指定できます。
-設定内の相対パスは設定ファイルのあるディレクトリを基準に解決します。
+toml形式です。現在はcwdのものを読みます
 
 ```toml
 model_path = "models/zenz-v3.2-xsmall-Q5_K_M.gguf"
@@ -146,70 +86,24 @@ rom-kana ruleは、libskkと同様に`$LIBSKK_DATA_PATH/*/rules`、または
 rule_search_paths = ["/path/to/libskk/rules"]
 ```
 
-`--script`を省略すると標準入力から操作列を読みます。各行は最初の空白でコマンドと値に
-分けます。
 
-```text
-context 食事の前に手を合わせて、
-input はし
-prepare
-lookup
-select 0
-lookup
+## build
 
-context 荷物を
-input おく
-prepare
-lookup る
-```
+TODO: nixで成果物をつくる
 
-- `context`: KV cacheを破棄して左文脈を設定
-- `input`: 現在の未確定入力全体を設定
-- `prepare`: 現在のcontext/inputまで投機実行
-- `lookup [okuri]`: 辞書候補を取得し、zenzでスコアリング
-- `select N`: 直前の候補Nを選択し、user辞書とrecencyを更新
-- `purge N`: 直前の候補Nをuser辞書から削除
-- `register TEXT`: 現在のinput/okuriへ候補を明示登録
-- `kana ROMAJI`: ひらがなへ変換
-- `katakana ROMAJI`: カタカナへ変換
-- `hankaku-katakana ROMAJI`: 半角カタカナへ変換
-- `key TEXT BASE MODIFIERS`: frontendと同じ形式のキーイベントを入力
-- `focus-out commit|reset`: 未確定入力を確定または破棄して状態をreset
-- `reset`: 入力状態を破棄
+### development
 
-ローマ字かな変換だけを試す場合は、モデルや辞書をロードせずに実行できます。
+開発環境は`nix-shell`またはdirenvで読み込めます。
+`build.sh`が`result/`へ成果物を生成します。
+`start.sh`が、fcitx5の探索パスへ`./result/`を追加してfcitx5を起動します (`-r`でreplace running instance)
+設定画面で `SKK Zenz` を追加してください。
 
 ```console
-cargo run -p skk-zenz-backend -- --romaji kanji
-cargo run -p skk-zenz-backend -- --romaji kanji --kana-mode katakana
+direnv allow
+./build.sh
+./start.sh
 ```
 
-frontendから渡すキーイベントは、キーボードレイアウトとShift適用後の`text`と、
-修飾前の論理`key`を分けます。backendはキーボードレイアウトを推測しません。
+backendを初期化できない場合や入力処理に失敗した場合は標準エラーへ原因を記録し、
+キー入力はアプリケーションへそのまま渡します。
 
-```rust
-KeyEvent {
-    text: Some("!".to_owned()),
-    key: Key::Character('1'),
-    modifiers: Modifiers::SHIFT,
-}
-```
-
-libskk keymapの修飾なし印字キー（`!`や`X`）は`text`に対して照合し、`S-1`や
-`C-q`などの明示的なChordと名前付きキーは`key + modifiers`に対して照合します。
-両方に一致する定義がある場合は、明示的なChordを優先します。
-
-preedit状態もbackendが単一で保持します。`Backend::handle_event`へキーやfocus-outを
-渡すと、`InputUpdate`として`consumed`、preedit、候補、commit文字列を返します。
-
-```text
-context これは
-key K k shift
-key a a -
-key n n -
-key a a -
-key SPC space -
-key - Return -
-```
-
-この操作列では`▽かな`から辞書lookupを行い、`▼候補`を経て確定します。
