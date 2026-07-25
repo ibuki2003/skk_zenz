@@ -8,6 +8,7 @@ use crate::input::{
     Composition, InputEvent, InputMode, InputState, InputUpdate, Phase, SelectionOrigin,
 };
 use crate::keymap::{KeyEvent, Keymap, Modifiers};
+use crate::numeric::NumericInput;
 use crate::rom_kana::{KanaConversion, KanaMode, RomKanaRule, convert_kana_script};
 use crate::zenz::{Score, ZenzScorer};
 
@@ -130,33 +131,34 @@ impl Backend {
         };
         eprintln!("[BACKEND] lookup order={order:?}");
         let use_ai_score = order.contains(&CandidateSortKey::AiScore);
-        let dictionary_candidates = self.lookup_dictionaries(input, okuri)?;
+        let numeric_input = NumericInput::extract(input);
+        let dictionary_candidates =
+            self.lookup_dictionaries(input, okuri, numeric_input.as_ref())?;
 
         let mut candidates = Vec::with_capacity(dictionary_candidates.len());
         for candidate in dictionary_candidates {
-            let output = format!(
-                "{}{}",
-                candidate.text,
-                candidate.okuri.as_deref().unwrap_or_default()
-            );
-            let score = if use_ai_score {
-                self.scorer.score(context, input, &output)?
-            } else {
-                Score::default()
-            };
-            candidates.push(Candidate {
-                input: candidate.input,
-                okuri: candidate.okuri,
-                text: candidate.text,
-                output,
-                annotation: candidate.annotation,
-                source: candidate.source,
-                loss: score.loss,
-                token_count: score.token_count,
-                recency: candidate.recency,
-            });
+            for text in self.expand_numeric_candidate(&candidate, numeric_input.as_ref())? {
+                let output = format!("{text}{}", candidate.okuri.as_deref().unwrap_or_default());
+                let score = if use_ai_score {
+                    self.scorer.score(context, input, &output)?
+                } else {
+                    Score::default()
+                };
+                candidates.push(Candidate {
+                    input: candidate.input.clone(),
+                    okuri: candidate.okuri.clone(),
+                    text: candidate.text.clone(),
+                    output,
+                    annotation: candidate.annotation.clone(),
+                    source: candidate.source,
+                    loss: score.loss,
+                    token_count: score.token_count,
+                    recency: candidate.recency,
+                });
+            }
         }
         candidates.sort_by(|left, right| compare_candidates(left, right, &order));
+        deduplicate_candidate_outputs(&mut candidates);
         eprint!("[BACKEND] lookup -> ");
         for candidate in &candidates {
             eprint!(
@@ -172,28 +174,32 @@ impl Backend {
         eprintln!("[BACKEND] abbr lookup order={order:?}");
         let use_ai_score = order.contains(&CandidateSortKey::AiScore);
         let context = self.input_state.context.clone();
-        let dictionary_candidates = self.lookup_dictionaries(input, None)?;
+        let numeric_input = NumericInput::extract(input);
+        let dictionary_candidates =
+            self.lookup_dictionaries(input, None, numeric_input.as_ref())?;
         let mut candidates = Vec::with_capacity(dictionary_candidates.len());
         for candidate in dictionary_candidates {
-            let output = candidate.text.clone();
-            let score = if use_ai_score {
-                self.scorer.score(&context, input, &output)?
-            } else {
-                Score::default()
-            };
-            candidates.push(Candidate {
-                input: candidate.input,
-                okuri: None,
-                text: candidate.text,
-                output,
-                annotation: candidate.annotation,
-                source: candidate.source,
-                loss: score.loss,
-                token_count: score.token_count,
-                recency: candidate.recency,
-            });
+            for output in self.expand_numeric_candidate(&candidate, numeric_input.as_ref())? {
+                let score = if use_ai_score {
+                    self.scorer.score(&context, input, &output)?
+                } else {
+                    Score::default()
+                };
+                candidates.push(Candidate {
+                    input: candidate.input.clone(),
+                    okuri: None,
+                    text: candidate.text.clone(),
+                    output,
+                    annotation: candidate.annotation.clone(),
+                    source: candidate.source,
+                    loss: score.loss,
+                    token_count: score.token_count,
+                    recency: candidate.recency,
+                });
+            }
         }
         candidates.sort_by(|left, right| compare_candidates(left, right, &order));
+        deduplicate_candidate_outputs(&mut candidates);
         Ok(candidates)
     }
 
@@ -201,10 +207,13 @@ impl Backend {
         &self,
         input: &str,
         okuri: Option<&str>,
+        numeric_input: Option<&NumericInput>,
     ) -> Result<Vec<DictionaryCandidate>> {
-        let mut candidates = self.user_dictionary.lookup(input, okuri)?;
-        for dictionary in &self.system_dictionaries {
-            candidates.extend(dictionary.lookup(input, okuri)?);
+        let mut candidates = self.lookup_dictionary_key(input, okuri)?;
+        if let Some(numeric_input) = numeric_input
+            && numeric_input.key != input
+        {
+            candidates.extend(self.lookup_dictionary_key(&numeric_input.key, okuri)?);
         }
         let mut seen = HashSet::new();
         candidates.retain(|candidate| {
@@ -215,6 +224,37 @@ impl Backend {
             ))
         });
         Ok(candidates)
+    }
+
+    fn lookup_dictionary_key(
+        &self,
+        input: &str,
+        okuri: Option<&str>,
+    ) -> Result<Vec<DictionaryCandidate>> {
+        let mut candidates = self.user_dictionary.lookup(input, okuri)?;
+        for dictionary in &self.system_dictionaries {
+            candidates.extend(dictionary.lookup(input, okuri)?);
+        }
+        Ok(candidates)
+    }
+
+    fn expand_numeric_candidate(
+        &self,
+        candidate: &DictionaryCandidate,
+        numeric_input: Option<&NumericInput>,
+    ) -> Result<Vec<String>> {
+        let Some(numeric_input) = numeric_input.filter(|numeric| candidate.input == numeric.key)
+        else {
+            return Ok(vec![candidate.text.clone()]);
+        };
+        numeric_input.expand(&candidate.text, |value| {
+            self.lookup_dictionary_key(value, None).map(|candidates| {
+                candidates
+                    .into_iter()
+                    .map(|candidate| candidate.text)
+                    .collect()
+            })
+        })
     }
 
     pub fn register(
@@ -786,6 +826,11 @@ fn compare_candidates(
         })
         .find(|ordering| !ordering.is_eq())
         .unwrap_or(std::cmp::Ordering::Equal)
+}
+
+fn deduplicate_candidate_outputs(candidates: &mut Vec<Candidate>) {
+    let mut seen = HashSet::new();
+    candidates.retain(|candidate| seen.insert(candidate.output.clone()));
 }
 
 impl From<&Candidate> for DictionaryCandidate {

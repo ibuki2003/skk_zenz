@@ -4,6 +4,7 @@ mod config;
 mod dictionary;
 mod input;
 mod keymap;
+mod numeric;
 mod okuri;
 mod rom_kana;
 pub mod zenz;

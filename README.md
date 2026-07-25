@@ -26,7 +26,7 @@ SKKを現代的にしたいな!というモチベでPoCを作ってみます
 - 最適化
 - nixでビルドしてhome-managerから呼べるようにする
 - `complete()`による見出し補完
-- 数値変換、辞書内Lisp式などの特殊変換
+- 辞書内Lisp式などの特殊変換（数値変換は実装済み）
 - skkserv、CDB辞書
 - system/user辞書の自動reload監視(?)
 - 性能検証
