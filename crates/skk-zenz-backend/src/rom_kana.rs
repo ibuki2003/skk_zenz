@@ -70,13 +70,18 @@ impl RomKanaRule {
     }
 
     pub fn convert(&self, input: &str, mode: KanaMode) -> KanaConversion {
-        let mut conversion = Conversion::new(self, mode);
-        for character in input.chars() {
-            conversion.append(character);
-        }
+        let mut conversion = self.convert_partial(input, mode);
         if conversion.preedit == "n" {
             conversion.output.push_str(mode.n());
             conversion.preedit.clear();
+        }
+        conversion
+    }
+
+    pub fn convert_partial(&self, input: &str, mode: KanaMode) -> KanaConversion {
+        let mut conversion = Conversion::new(self, mode);
+        for character in input.chars() {
+            conversion.append(character);
         }
         KanaConversion {
             output: conversion.output,
@@ -421,6 +426,13 @@ mod tests {
                 preedit: String::new()
             }
         );
+    }
+
+    #[test]
+    fn partial_conversion_retains_terminal_n() {
+        let rule = rule(&[("na", "", "な")]);
+        assert_eq!(rule.convert_partial("n", KanaMode::Hiragana).preedit, "n");
+        assert_eq!(rule.convert("n", KanaMode::Hiragana).output, "ん");
     }
 
     #[test]

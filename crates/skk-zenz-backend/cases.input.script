@@ -1,0 +1,13 @@
+# Shift+Kで見出し入力を開始し、「かな」を変換する。
+context これは
+key K k shift
+key a a -
+key n n -
+key a a -
+key SPC space -
+key - Return -
+
+# focus-out時は未確定入力をcommitして状態を破棄する。
+key K k shift
+key a a -
+focus-out commit

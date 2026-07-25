@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.98"
+bitflags = "2.9.1"
 clap = { version = "4.5.41", features = ["derive"] }
 encoding_rs = "0.8.35"
 llama-cpp-2 = "0.1.152"

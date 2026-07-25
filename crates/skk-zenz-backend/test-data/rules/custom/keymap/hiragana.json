@@ -1,0 +1,12 @@
+{
+  "include": [
+    "base/hiragana",
+    "local"
+  ],
+  "define": {
+    "keymap": {
+      "C-q": null,
+      "S-1": "shift-one"
+    }
+  }
+}

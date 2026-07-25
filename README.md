@@ -37,6 +37,8 @@ SKKを現代的にしたいな!というモチベでPoCを作ってみます
   - [x] backendのコア機能を試せるCLIを提供する
   - [x] TOML設定ファイルからモデル・辞書・推論設定を読み込む
   - [x] libskkのrule定義とincludeを読むstatelessなローマ字・かな変換API
+  - [x] frontend非依存のキーイベント型とlibskk互換keymap loader
+  - [x] 直接入力・preedit・候補選択の状態機械をbackendに保持
   - [ ] 後回し: 数値変換、辞書内Lisp式などの特殊変換
   - [ ] 後回し: `complete()`による見出し補完
   - [ ] 後回し: skkserv、CDB辞書
@@ -176,6 +178,9 @@ lookup る
 - `kana ROMAJI`: ひらがなへ変換
 - `katakana ROMAJI`: カタカナへ変換
 - `hankaku-katakana ROMAJI`: 半角カタカナへ変換
+- `key TEXT BASE MODIFIERS`: frontendと同じ形式のキーイベントを入力
+- `focus-out commit|reset`: 未確定入力を確定または破棄して状態をreset
+- `reset`: 入力状態を破棄
 
 ローマ字かな変換だけを試す場合は、モデルや辞書をロードせずに実行できます。
 
@@ -183,3 +188,33 @@ lookup る
 cargo run -p skk-zenz-backend -- --romaji kanji
 cargo run -p skk-zenz-backend -- --romaji kanji --kana-mode katakana
 ```
+
+frontendから渡すキーイベントは、キーボードレイアウトとShift適用後の`text`と、
+修飾前の論理`key`を分けます。backendはキーボードレイアウトを推測しません。
+
+```rust
+KeyEvent {
+    text: Some("!".to_owned()),
+    key: Key::Character('1'),
+    modifiers: Modifiers::SHIFT,
+}
+```
+
+libskk keymapの修飾なし印字キー（`!`や`X`）は`text`に対して照合し、`S-1`や
+`C-q`などの明示的なChordと名前付きキーは`key + modifiers`に対して照合します。
+両方に一致する定義がある場合は、明示的なChordを優先します。
+
+preedit状態もbackendが単一で保持します。`Backend::handle_event`へキーやfocus-outを
+渡すと、`InputUpdate`として`consumed`、preedit、候補、commit文字列を返します。
+
+```text
+context これは
+key K k shift
+key a a -
+key n n -
+key a a -
+key SPC space -
+key - Return -
+```
+
+この操作列では`▽かな`から辞書lookupを行い、`▼候補`を経て確定します。
