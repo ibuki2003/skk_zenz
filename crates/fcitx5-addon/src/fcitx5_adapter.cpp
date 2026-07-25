@@ -370,6 +370,13 @@ public:
             backend, text.empty() ? nullptr : text.c_str(), keyName.c_str(),
             backendModifiers(rawKey.states()), &target, updateCallback);
         if (!event.accepted() && text.empty() && !rawKey.isModifier()) {
+            if (rawKey.sym() == FcitxKey_BackSpace) {
+                auto context = trackedContext_;
+                popUtf8(context);
+                skk_zenz_backend_set_context(
+                    backend, context.c_str(), nullptr, discardUpdate);
+                return;
+            }
             skk_zenz_backend_set_context(
                 backend, "", nullptr, discardUpdate);
         }
