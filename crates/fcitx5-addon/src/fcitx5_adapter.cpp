@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <iomanip>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -13,14 +14,18 @@
 
 #include <fcitx/addonfactory.h>
 #include <fcitx/addonmanager.h>
+#include <fcitx/action.h>
 #include <fcitx/candidatelist.h>
 #include <fcitx/event.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputmethodengine.h>
 #include <fcitx/inputpanel.h>
 #include <fcitx/instance.h>
+#include <fcitx/menu.h>
+#include <fcitx/statusarea.h>
 #include <fcitx/surroundingtext.h>
 #include <fcitx/text.h>
+#include <fcitx/userinterfacemanager.h>
 #include <fcitx-utils/event.h>
 #include <fcitx-utils/key.h>
 
@@ -57,6 +62,9 @@ bool skk_zenz_backend_focus_out(
     SkkZenzBackend *backend, void *userData, SkkZenzUpdateCallback callback);
 bool skk_zenz_backend_reset(
     SkkZenzBackend *backend, void *userData, SkkZenzUpdateCallback callback);
+bool skk_zenz_backend_set_input_mode(
+    SkkZenzBackend *backend, std::uint8_t mode, void *userData,
+    SkkZenzUpdateCallback callback);
 bool skk_zenz_backend_select_candidate(
     SkkZenzBackend *backend, std::size_t index, void *userData,
     SkkZenzUpdateCallback callback);
@@ -183,6 +191,73 @@ void popUtf8(std::string &text) {
     text.erase(offset);
 }
 
+struct InputModeStatus {
+    const char *label;
+    const char *description;
+    const char *actionName;
+};
+
+constexpr InputModeStatus INPUT_MODE_STATUS[] = {
+    {"あ", "Hiragana", "hiragana"},
+    {"ア", "Katakana", "katakana"},
+    {"ｱ", "Half width Katakana", "hankaku-katakana"},
+    {"A_", "Latin", "latin"},
+    {"Ａ", "Wide latin", "wide-latin"},
+};
+
+const InputModeStatus &inputModeStatus(std::uint8_t mode) {
+    return INPUT_MODE_STATUS[mode < std::size(INPUT_MODE_STATUS) ? mode : 0];
+}
+
+class ModeAction final : public fcitx::Action {
+public:
+    explicit ModeAction(std::function<std::uint8_t()> currentMode)
+        : currentMode_(std::move(currentMode)) {}
+
+    std::string shortText(fcitx::InputContext *) const override {
+        const auto &status = inputModeStatus(currentMode_());
+        return std::string(status.label) + " - " + status.description;
+    }
+
+    std::string longText(fcitx::InputContext *) const override {
+        return inputModeStatus(currentMode_()).description;
+    }
+
+    std::string icon(fcitx::InputContext *) const override {
+        return "";
+    }
+
+private:
+    std::function<std::uint8_t()> currentMode_;
+};
+
+class ModeSubAction final : public fcitx::SimpleAction {
+public:
+    ModeSubAction(
+        std::uint8_t mode, std::function<std::uint8_t()> currentMode,
+        std::function<void(fcitx::InputContext *, std::uint8_t)> setMode)
+        : mode_(mode), currentMode_(std::move(currentMode)),
+          setMode_(std::move(setMode)) {
+        const auto &status = inputModeStatus(mode);
+        setShortText(std::string(status.label) + " - " + status.description);
+        setLongText(status.description);
+        setCheckable(true);
+    }
+
+    bool isChecked(fcitx::InputContext *) const override {
+        return mode_ == currentMode_();
+    }
+
+    void activate(fcitx::InputContext *inputContext) override {
+        setMode_(inputContext, mode_);
+    }
+
+private:
+    std::uint8_t mode_;
+    std::function<std::uint8_t()> currentMode_;
+    std::function<void(fcitx::InputContext *, std::uint8_t)> setMode_;
+};
+
 class SkkZenzEngine final : public fcitx::InputMethodEngineV2 {
 public:
     explicit SkkZenzEngine(fcitx::Instance *instance)
@@ -192,6 +267,27 @@ public:
                   skk_zenz_backend_new(nullptr),
                   std::memory_order_release);
           }) {
+        modeAction_ = std::make_unique<ModeAction>(
+            [this]() { return lastInputMode_; });
+        modeMenu_ = std::make_unique<fcitx::Menu>();
+        modeAction_->setMenu(modeMenu_.get());
+        instance_->userInterfaceManager().registerAction(
+            "skk-zenz-input-mode", modeAction_.get());
+        for (std::uint8_t mode = 0; mode < std::size(INPUT_MODE_STATUS);
+             ++mode) {
+            modeSubActions_.push_back(std::make_unique<ModeSubAction>(
+                mode, [this]() { return lastInputMode_; },
+                [this](
+                    fcitx::InputContext *inputContext,
+                    std::uint8_t selectedMode) {
+                    setInputMode(inputContext, selectedMode);
+                }));
+            instance_->userInterfaceManager().registerAction(
+                std::string("skk-zenz-input-mode-") +
+                    inputModeStatus(mode).actionName,
+                modeSubActions_.back().get());
+            modeMenu_->addAction(modeSubActions_.back().get());
+        }
         eventHandlers_.emplace_back(instance_->watchEvent(
             fcitx::EventType::InputContextKeyEvent,
             fcitx::EventWatcherPhase::PostInputMethod,
@@ -227,6 +323,14 @@ public:
                     static_cast<fcitx::InputContextEvent &>(event);
                 trackSurroundingText(contextEvent.inputContext());
             }));
+    }
+
+    void activate(
+        const fcitx::InputMethodEntry &entry,
+        fcitx::InputContextEvent &event) override {
+        FCITX_UNUSED(entry);
+        event.inputContext()->statusArea().addAction(
+            fcitx::StatusGroup::InputMethod, modeAction_.get());
     }
 
     ~SkkZenzEngine() override {
@@ -275,7 +379,6 @@ public:
         const fcitx::InputMethodEntry &entry,
         fcitx::InputContextEvent &event) override {
         FCITX_UNUSED(entry);
-        hideModeIndicator();
         focusOut(event.inputContext());
     }
 
@@ -298,14 +401,31 @@ public:
             inputContext->commitString(update.commit);
         }
 
+        const bool modeChanged = update.inputMode != lastInputMode_;
+        if (modeChanged) {
+            lastInputMode_ = update.inputMode;
+            modeAction_->update(inputContext);
+        }
+
         auto &panel = inputContext->inputPanel();
+        if (modeChanged && update.preedit[0] == '\0' &&
+            update.candidateCount == 0) {
+            candidateCount_ = 0;
+            candidatePageOffset_ = 0;
+            panel.reset();
+            inputContext->updatePreedit();
+            instance_->showInputMethodInformation(inputContext);
+            inputContext->updateUserInterface(
+                fcitx::UserInterfaceComponent::InputPanel);
+            if (keyEvent && update.consumed) {
+                keyEvent->filterAndAccept();
+            }
+            return;
+        }
+
         const fcitx::Text preedit(update.preedit);
         panel.setClientPreedit(preedit);
         panel.setPreedit(preedit);
-        if (update.inputMode != lastInputMode_) {
-            lastInputMode_ = update.inputMode;
-            showModeIndicator(inputContext, update.inputMode);
-        }
 
         if (update.candidateCount == 0) {
             candidateCount_ = 0;
@@ -459,36 +579,27 @@ private:
             backend, index, &target, updateCallback);
     }
 
-    void showModeIndicator(
+    void setInputMode(
         fcitx::InputContext *inputContext, std::uint8_t mode) {
-        static constexpr const char *MODE_LABELS[] = {
-            "[あ]", "[ア]", "[ｱ]", "[A]", "[Ａ]",
-        };
-        modeTimer_.reset();
-        modeIndicatorContext_ = inputContext;
-        inputContext->inputPanel().setAuxUp(
-            fcitx::Text(MODE_LABELS[mode < 5 ? mode : 0]));
-        modeTimer_ = instance_->eventLoop().addTimeEvent(
-            CLOCK_MONOTONIC,
-            fcitx::now(CLOCK_MONOTONIC) + 1'200'000, 0,
-            [this, inputContext](
-                fcitx::EventSourceTime *, std::uint64_t) {
-                if (modeIndicatorContext_ == inputContext) {
-                    inputContext->inputPanel().setAuxUp({});
-                    inputContext->updateUserInterface(
-                        fcitx::UserInterfaceComponent::InputPanel);
-                    modeIndicatorContext_ = nullptr;
-                }
-                return false;
-            });
+        auto *backend = backend_.load(std::memory_order_acquire);
+        if (!backend) {
+            return;
+        }
+        UpdateTarget target{this, inputContext, nullptr};
+        skk_zenz_backend_set_input_mode(
+            backend, mode, &target, updateCallback);
     }
 
-    void hideModeIndicator() {
-        modeTimer_.reset();
-        if (modeIndicatorContext_) {
-            modeIndicatorContext_->inputPanel().setAuxUp({});
-            modeIndicatorContext_ = nullptr;
-        }
+    std::string subMode(
+        const fcitx::InputMethodEntry &,
+        fcitx::InputContext &) override {
+        return inputModeStatus(lastInputMode_).description;
+    }
+
+    std::string subModeLabelImpl(
+        const fcitx::InputMethodEntry &,
+        fcitx::InputContext &) override {
+        return inputModeStatus(lastInputMode_).label;
     }
 
     fcitx::Instance *instance_;
@@ -502,8 +613,9 @@ private:
     std::size_t candidateCount_ = 0;
     std::size_t candidatePageOffset_ = 0;
     std::uint8_t lastInputMode_ = 0;
-    fcitx::InputContext *modeIndicatorContext_ = nullptr;
-    std::unique_ptr<fcitx::EventSourceTime> modeTimer_;
+    std::unique_ptr<ModeAction> modeAction_;
+    std::unique_ptr<fcitx::Menu> modeMenu_;
+    std::vector<std::unique_ptr<ModeSubAction>> modeSubActions_;
 };
 
 class SkkZenzEngineFactory final : public fcitx::AddonFactory {

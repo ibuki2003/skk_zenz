@@ -15,6 +15,7 @@ pub enum InputMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputEvent {
     Key(KeyEvent),
+    SetInputMode(InputMode),
     SetContext(String),
     FocusOut { commit: bool },
     SelectCandidate(usize),

@@ -220,6 +220,24 @@ pub extern "C" fn skk_zenz_backend_reset(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn skk_zenz_backend_set_input_mode(
+    backend: *mut Backend,
+    mode: u8,
+    user_data: *mut c_void,
+    callback: UpdateCallback,
+) -> bool {
+    let mode = match mode {
+        0 => skk_zenz_backend::InputMode::Hiragana,
+        1 => skk_zenz_backend::InputMode::Katakana,
+        2 => skk_zenz_backend::InputMode::HankakuKatakana,
+        3 => skk_zenz_backend::InputMode::Latin,
+        4 => skk_zenz_backend::InputMode::WideLatin,
+        _ => return false,
+    };
+    dispatch(backend, InputEvent::SetInputMode(mode), user_data, callback)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn skk_zenz_backend_select_candidate(
     backend: *mut Backend,
     index: usize,

@@ -70,6 +70,16 @@ impl Backend {
     pub fn handle_event(&mut self, event: InputEvent) -> Result<InputUpdate> {
         let prepare_speculatively = matches!(&event, InputEvent::Key(_));
         let (consumed, mut commit) = match event {
+            InputEvent::SetInputMode(mode) => {
+                let output = self.finish_input()?;
+                self.input_state.phase = Phase::Direct;
+                self.input_state.direct_pending.clear();
+                self.input_state.mode = mode;
+                if let Some(output) = &output {
+                    self.input_state.context.push_str(output);
+                }
+                (true, output)
+            }
             InputEvent::SetContext(context) => {
                 if self.input_state.registrations.is_empty() {
                     self.input_state.context = context;
