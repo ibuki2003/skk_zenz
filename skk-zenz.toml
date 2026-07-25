@@ -1,7 +1,0 @@
-model_path = "models/zenz-v3.2-xsmall-Q5_K_M.gguf"
-system_dictionaries = ["data/SKK-JISYO.L"]
-user_dictionary = "data/user.sqlite3"
-
-context_size = 1024
-# threads = 8
-gpu_layers = 999

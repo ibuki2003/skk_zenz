@@ -24,6 +24,7 @@ pub struct BackendConfig {
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
     model_path: Option<PathBuf>,
+    #[serde(default = "default_huggingface_model")]
     huggingface: Option<String>,
     #[serde(default = "default_rom_kana_rule")]
     rom_kana_rule: String,
@@ -200,6 +201,10 @@ const fn default_gpu_layers() -> u32 {
 
 fn default_rom_kana_rule() -> String {
     "default".to_owned()
+}
+
+fn default_huggingface_model() -> Option<String> {
+    Some("Miwa-Keita/zenz-v3.2-small-gguf/ggml-model-Q5_K_M.gguf".to_owned())
 }
 
 #[cfg(test)]

@@ -1,0 +1,4 @@
+huggingface = "Miwa-Keita/zenz-v3.2-small-gguf/ggml-model-Q5_K_M.gguf"
+
+rom_kana_rule = "default"
+
