@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 use crate::candidate::{Candidate, CandidateSource, DictionaryCandidate};
 use crate::config::BackendConfig;
 use crate::dictionary::{Dictionary, SkkFileDictionary, UserDictionary, open_system_dictionaries};
-use crate::input::{Composition, InputEvent, InputMode, InputState, InputUpdate, Phase};
+use crate::input::{
+    Composition, InputEvent, InputMode, InputState, InputUpdate, Phase, SelectionOrigin,
+};
 use crate::keymap::{KeyEvent, Keymap, Modifiers};
 use crate::rom_kana::{KanaConversion, KanaMode, RomKanaRule, convert_kana_script};
 use crate::zenz::{Score, ZenzScorer};
@@ -116,18 +118,7 @@ impl Backend {
         okuri: Option<&str>,
     ) -> Result<Vec<Candidate>> {
         eprintln!("[BACKEND] lookup context={context:?} input={input:?} okuri={okuri:?}");
-        let mut dictionary_candidates = self.user_dictionary.lookup(input, okuri)?;
-        for dictionary in &self.system_dictionaries {
-            dictionary_candidates.extend(dictionary.lookup(input, okuri)?);
-        }
-        let mut seen = HashSet::new();
-        dictionary_candidates.retain(|candidate| {
-            seen.insert(format!(
-                "{}{}",
-                candidate.text,
-                candidate.okuri.as_deref().unwrap_or_default()
-            ))
-        });
+        let dictionary_candidates = self.lookup_dictionaries(input, okuri)?;
 
         let mut candidates = Vec::with_capacity(dictionary_candidates.len());
         for candidate in dictionary_candidates {
@@ -164,6 +155,47 @@ impl Backend {
                 candidate.output, candidate.loss, candidate.recency, candidate.use_count
             );
         }
+        Ok(candidates)
+    }
+
+    fn lookup_abbrev(&self, input: &str) -> Result<Vec<Candidate>> {
+        self.lookup_dictionaries(input, None)?
+            .into_iter()
+            .map(|candidate| {
+                let key = CandidateKey::from(&candidate);
+                Ok(Candidate {
+                    input: candidate.input,
+                    okuri: None,
+                    output: candidate.text.clone(),
+                    text: candidate.text,
+                    annotation: candidate.annotation,
+                    source: candidate.source,
+                    loss: 0.0,
+                    token_count: 0,
+                    recency: self.recency.get(&key).copied(),
+                    use_count: candidate.use_count,
+                })
+            })
+            .collect()
+    }
+
+    fn lookup_dictionaries(
+        &self,
+        input: &str,
+        okuri: Option<&str>,
+    ) -> Result<Vec<DictionaryCandidate>> {
+        let mut candidates = self.user_dictionary.lookup(input, okuri)?;
+        for dictionary in &self.system_dictionaries {
+            candidates.extend(dictionary.lookup(input, okuri)?);
+        }
+        let mut seen = HashSet::new();
+        candidates.retain(|candidate| {
+            seen.insert(format!(
+                "{}{}",
+                candidate.text,
+                candidate.okuri.as_deref().unwrap_or_default()
+            ))
+        });
         Ok(candidates)
     }
 
@@ -208,12 +240,22 @@ impl Backend {
             Phase::Preedit { stem, okuri } => {
                 self.handle_preedit(event, command.as_deref(), stem, okuri)
             }
+            Phase::Abbrev { input } => self.handle_abbrev(event, command.as_deref(), input),
             Phase::Selecting {
                 input,
                 okuri,
                 candidates,
                 cursor,
-            } => self.handle_selecting(event, command.as_deref(), input, okuri, candidates, cursor),
+                origin,
+            } => self.handle_selecting(
+                event,
+                command.as_deref(),
+                input,
+                okuri,
+                candidates,
+                cursor,
+                origin,
+            ),
         }
     }
 
@@ -257,6 +299,16 @@ impl Backend {
                     okuri: None,
                 };
                 return Ok((true, None));
+            }
+            Some("abbrev") if supports_abbrev(self.input_state.mode) => {
+                let commit = self.finish_direct();
+                if let Some(commit) = &commit {
+                    self.input_state.context.push_str(commit);
+                }
+                self.input_state.phase = Phase::Abbrev {
+                    input: String::new(),
+                };
+                return Ok((true, commit));
             }
             _ => {}
         }
@@ -394,6 +446,60 @@ impl Backend {
         Ok((true, None))
     }
 
+    fn handle_abbrev(
+        &mut self,
+        event: KeyEvent,
+        command: Option<&str>,
+        mut input: String,
+    ) -> Result<(bool, Option<String>)> {
+        match command {
+            Some("abort") => {
+                self.input_state.phase = Phase::Direct;
+                return Ok((true, None));
+            }
+            Some("delete") => {
+                if input.pop().is_some() {
+                    self.input_state.phase = Phase::Abbrev { input };
+                } else {
+                    self.input_state.phase = Phase::Direct;
+                }
+                return Ok((true, None));
+            }
+            Some("next-candidate") => {
+                if input.is_empty() {
+                    self.input_state.phase = Phase::Abbrev { input };
+                    return Ok((true, None));
+                }
+                let candidates = self.lookup_abbrev(&input)?;
+                if candidates.is_empty() {
+                    self.input_state.phase = Phase::Abbrev { input };
+                } else {
+                    self.input_state.phase = Phase::Selecting {
+                        input,
+                        okuri: None,
+                        candidates,
+                        cursor: 0,
+                        origin: SelectionOrigin::Abbrev,
+                    };
+                }
+                return Ok((true, None));
+            }
+            Some("commit") | Some("commit-unhandled") => {
+                self.input_state.context.push_str(&input);
+                self.input_state.phase = Phase::Direct;
+                return Ok((command == Some("commit"), Some(input)));
+            }
+            _ => {}
+        }
+        let Some(text) = event.text else {
+            self.input_state.phase = Phase::Abbrev { input };
+            return Ok((false, None));
+        };
+        input.push_str(&text);
+        self.input_state.phase = Phase::Abbrev { input };
+        Ok((true, None))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn handle_selecting(
         &mut self,
@@ -403,11 +509,15 @@ impl Backend {
         okuri: Option<String>,
         mut candidates: Vec<Candidate>,
         mut cursor: usize,
+        origin: SelectionOrigin,
     ) -> Result<(bool, Option<String>)> {
         if should_restore_preedit(command, cursor) {
-            self.input_state.phase = Phase::Preedit {
-                stem: Composition::from_output(input),
-                okuri: okuri.map(Composition::from_output),
+            self.input_state.phase = match origin {
+                SelectionOrigin::Preedit => Phase::Preedit {
+                    stem: Composition::from_output(input),
+                    okuri: okuri.map(Composition::from_output),
+                },
+                SelectionOrigin::Abbrev => Phase::Abbrev { input },
             };
             return Ok((true, None));
         }
@@ -454,6 +564,7 @@ impl Backend {
                     okuri,
                     candidates,
                     cursor,
+                    origin,
                 };
                 return Ok((false, None));
             }
@@ -464,6 +575,7 @@ impl Backend {
             okuri,
             candidates,
             cursor,
+            origin,
         };
         Ok((true, None))
     }
@@ -487,6 +599,7 @@ impl Backend {
                 okuri: okuri_text,
                 candidates,
                 cursor: 0,
+                origin: SelectionOrigin::Preedit,
             };
         }
         Ok((true, None))
@@ -523,6 +636,7 @@ impl Backend {
                 stem,
                 okuri.as_ref(),
             ))),
+            Phase::Abbrev { input } => Ok(Some(input.clone())),
             Phase::Selecting {
                 candidates, cursor, ..
             } => {
@@ -555,6 +669,13 @@ fn should_restore_preedit(command: Option<&str>, cursor: usize) -> bool {
 
 fn should_commit_selection_for_event(event: &KeyEvent) -> bool {
     event.text.is_some()
+}
+
+fn supports_abbrev(mode: InputMode) -> bool {
+    matches!(
+        mode,
+        InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana
+    )
 }
 
 fn input_mode_for_command(command: &str) -> Option<InputMode> {
@@ -717,6 +838,15 @@ mod tests {
             input_mode_for_command("set-input-mode-wide-latin"),
             Some(InputMode::WideLatin)
         );
+    }
+
+    #[test]
+    fn abbrev_is_available_only_from_kana_modes() {
+        assert!(supports_abbrev(InputMode::Hiragana));
+        assert!(supports_abbrev(InputMode::Katakana));
+        assert!(supports_abbrev(InputMode::HankakuKatakana));
+        assert!(!supports_abbrev(InputMode::Latin));
+        assert!(!supports_abbrev(InputMode::WideLatin));
     }
 
     #[test]

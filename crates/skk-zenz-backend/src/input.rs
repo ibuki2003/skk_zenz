@@ -47,12 +47,22 @@ pub(crate) enum Phase {
         stem: Composition,
         okuri: Option<Composition>,
     },
+    Abbrev {
+        input: String,
+    },
     Selecting {
         input: String,
         okuri: Option<String>,
         candidates: Vec<Candidate>,
         cursor: usize,
+        origin: SelectionOrigin,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SelectionOrigin {
+    Preedit,
+    Abbrev,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -78,6 +88,7 @@ impl InputState {
                 }
                 value
             }
+            Phase::Abbrev { input } => format!("▽{input}"),
             Phase::Selecting {
                 candidates, cursor, ..
             } => candidates
@@ -216,7 +227,20 @@ mod tests {
                 use_count: 0,
             }],
             cursor: 0,
+            origin: SelectionOrigin::Preedit,
         };
         assert_eq!(state.preedit(), "▼仮名");
+    }
+
+    #[test]
+    fn abbrev_preedit_keeps_ascii_input() {
+        let state = InputState {
+            phase: Phase::Abbrev {
+                input: "skk-server".to_owned(),
+            },
+            ..InputState::default()
+        };
+        assert_eq!(state.preedit(), "▽skk-server");
+        assert_eq!(state.speculative_input(), None);
     }
 }
