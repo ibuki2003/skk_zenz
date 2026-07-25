@@ -24,6 +24,10 @@ pub struct FfiUpdate {
     rerank_pending: bool,
     evaluated_candidate_count: usize,
     total_candidate_count: usize,
+    candidate_window_visible: bool,
+    candidate_page_start: usize,
+    candidate_page_size: usize,
+    show_annotations: bool,
 }
 
 pub type UpdateCallback = unsafe extern "C" fn(*mut c_void, *const FfiUpdate);
@@ -83,6 +87,10 @@ fn with_update(
         rerank_pending,
         evaluated_candidate_count: update.rerank_progress.map_or(0, |progress| progress.0),
         total_candidate_count: update.rerank_progress.map_or(0, |progress| progress.1),
+        candidate_window_visible: update.candidate_window_visible,
+        candidate_page_start: update.candidate_page_start,
+        candidate_page_size: update.candidate_page_size,
+        show_annotations: update.show_annotations,
     };
     // SAFETY: All pointers in ffi_update remain valid for the synchronous callback.
     unsafe { callback(user_data, &raw const ffi_update) };

@@ -22,6 +22,7 @@ pub struct BackendConfig {
     pub candidate_order: CandidateOrderConfig,
     pub rom_kana_rule: String,
     pub rule_search_paths: Vec<PathBuf>,
+    pub fcitx5: Fcitx5Config,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq)]
@@ -53,6 +54,32 @@ impl Default for CandidateOrderConfig {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Fcitx5Config {
+    pub page_size: usize,
+    pub candidate_window_threshold: usize,
+    pub show_annotations: bool,
+    pub candidate_key: String,
+}
+
+impl Default for Fcitx5Config {
+    fn default() -> Self {
+        Self {
+            page_size: 9,
+            candidate_window_threshold: 3,
+            show_annotations: true,
+            candidate_key: "digit".to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct FrontendConfig {
+    fcitx5: Fcitx5Config,
+}
+
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
     model_path: Option<PathBuf>,
@@ -69,6 +96,8 @@ struct ConfigFile {
     recency_half_life_days: f64,
     #[serde(default)]
     candidate_order: CandidateOrderConfig,
+    #[serde(default)]
+    frontend: FrontendConfig,
 }
 
 impl BackendConfig {
@@ -93,6 +122,12 @@ impl BackendConfig {
             anyhow::bail!("recency_half_life_days は正の有限値にしてください");
         }
         file.candidate_order.validate()?;
+        if !(1..=9).contains(&file.frontend.fcitx5.page_size) {
+            anyhow::bail!("frontend.fcitx5.page_size は1以上9以下にしてください");
+        }
+        if file.frontend.fcitx5.candidate_key != "digit" {
+            anyhow::bail!("frontend.fcitx5.candidate_key は現在 digit のみ指定できます");
+        }
         let base = path.parent().unwrap_or_else(|| Path::new(""));
         let config_dir = config_dir()?;
         let model_path = match file.model_path {
@@ -115,6 +150,7 @@ impl BackendConfig {
             candidate_order: file.candidate_order,
             rom_kana_rule: file.rom_kana_rule,
             rule_search_paths: rule_search_paths(&config_dir)?,
+            fcitx5: file.frontend.fcitx5,
         })
     }
 }
@@ -299,6 +335,7 @@ mod tests {
         assert_eq!(file.recency_half_life_days, 14.0);
         assert_eq!(file.candidate_order, CandidateOrderConfig::default());
         assert_eq!(file.rom_kana_rule, "default");
+        assert_eq!(file.frontend.fcitx5, Fcitx5Config::default());
     }
 
     #[test]
@@ -324,6 +361,25 @@ mod tests {
         );
         assert!(file.candidate_order.abbrev.is_empty());
         file.candidate_order.validate().unwrap();
+    }
+
+    #[test]
+    fn parses_fcitx5_candidate_ui() {
+        let file: ConfigFile = toml::from_str(
+            r#"
+            model_path = "model.gguf"
+
+            [frontend.fcitx5]
+            page_size = 8
+            candidate_window_threshold = 2
+            show_annotations = false
+            candidate_key = "digit"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(file.frontend.fcitx5.page_size, 8);
+        assert_eq!(file.frontend.fcitx5.candidate_window_threshold, 2);
+        assert!(!file.frontend.fcitx5.show_annotations);
     }
 
     #[test]

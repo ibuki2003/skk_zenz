@@ -6,3 +6,9 @@ rom_kana_rule = "default"
 okuri_ari = ["from_user", "ai_score"]
 okuri_nasi = ["from_user", "recency"]
 abbrev = ["from_user", "recency"]
+
+[frontend.fcitx5]
+page_size = 8
+candidate_window_threshold = 3
+show_annotations = true
+candidate_key = "digit"

@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
 use crate::candidate::{Candidate, CandidateSource, DictionaryCandidate};
-use crate::config::{BackendConfig, CandidateOrderConfig, CandidateSortKey};
+use crate::config::{BackendConfig, CandidateOrderConfig, CandidateSortKey, Fcitx5Config};
 use crate::dictionary::{Dictionary, SkkFileDictionary, UserDictionary, open_system_dictionaries};
 use crate::input::{
     Composition, InputEvent, InputMode, InputState, InputUpdate, Phase, Registration,
@@ -31,6 +31,7 @@ pub struct Backend {
     candidate_order: CandidateOrderConfig,
     input_state: InputState,
     active_rerank: Option<ActiveRerank>,
+    fcitx5: Fcitx5Config,
 }
 
 impl Backend {
@@ -60,6 +61,7 @@ impl Backend {
             candidate_order: config.candidate_order,
             input_state: InputState::default(),
             active_rerank: None,
+            fcitx5: config.fcitx5,
         })
     }
 
@@ -196,6 +198,14 @@ impl Backend {
     }
 
     fn input_update(&self, consumed: bool, commit: Option<String>) -> InputUpdate {
+        let (candidate_window_visible, candidate_page_start) = match &self.input_state.phase {
+            Phase::Selecting { cursor, .. }
+                if *cursor >= self.fcitx5.candidate_window_threshold =>
+            {
+                (true, self.fcitx5.candidate_window_threshold)
+            }
+            _ => (false, self.fcitx5.candidate_window_threshold),
+        };
         InputUpdate {
             consumed,
             preedit: self.input_state.preedit(),
@@ -208,6 +218,10 @@ impl Backend {
                 .as_ref()
                 .filter(|_| self.rerank_pending())
                 .map(|active| (active.evaluated, active.total)),
+            candidate_window_visible,
+            candidate_page_start,
+            candidate_page_size: self.fcitx5.page_size,
+            show_annotations: self.fcitx5.show_annotations,
         }
     }
 
@@ -673,7 +687,7 @@ impl Backend {
                 }
                 let candidates = self.lookup_abbrev(&input)?;
                 if candidates.is_empty() {
-                    self.begin_registration(input.clone(), None, Phase::Abbrev { input });
+                    self.begin_registration(input.clone(), None, Phase::Abbrev { input }, None);
                 } else {
                     self.input_state.phase = Phase::Selecting {
                         input,
@@ -718,16 +732,33 @@ impl Backend {
         }
         match command {
             Some("next-candidate") => {
-                if cursor + 1 < candidates.len() {
-                    cursor += 1;
+                if let Some(next_cursor) = next_candidate_cursor(
+                    cursor,
+                    candidates.len(),
+                    self.fcitx5.candidate_window_threshold,
+                    self.fcitx5.page_size,
+                ) {
+                    cursor = next_cursor;
                 } else {
                     let source_phase = selection_source_phase(input.clone(), okuri.clone(), origin);
-                    self.begin_registration(input, okuri, source_phase);
+                    let empty_return_phase = Phase::Selecting {
+                        input: input.clone(),
+                        okuri: okuri.clone(),
+                        candidates,
+                        cursor,
+                        origin,
+                    };
+                    self.begin_registration(input, okuri, source_phase, Some(empty_return_phase));
                     return Ok((true, None));
                 }
             }
             Some("previous-candidate") => {
-                cursor -= 1;
+                cursor = previous_candidate_cursor(
+                    cursor,
+                    self.fcitx5.candidate_window_threshold,
+                    self.fcitx5.page_size,
+                )
+                .expect("cursor 0 is restored to preedit before this branch");
             }
             Some("purge-candidate") => {
                 if let Some(candidate) = candidates.get(cursor).cloned() {
@@ -804,7 +835,7 @@ impl Backend {
         let context = self.input_state.context.clone();
         let candidates = self.lookup(&context, &input, okuri_text.as_deref())?;
         if candidates.is_empty() {
-            self.begin_registration(input, okuri_text, Phase::Preedit { stem, okuri });
+            self.begin_registration(input, okuri_text, Phase::Preedit { stem, okuri }, None);
         } else {
             self.input_state.phase = Phase::Selecting {
                 input,
@@ -817,11 +848,18 @@ impl Backend {
         Ok((true, None))
     }
 
-    fn begin_registration(&mut self, input: String, okuri: Option<String>, source_phase: Phase) {
+    fn begin_registration(
+        &mut self,
+        input: String,
+        okuri: Option<String>,
+        source_phase: Phase,
+        empty_return_phase: Option<Phase>,
+    ) {
         self.input_state.registrations.push(Registration {
             input,
             okuri,
             source_phase,
+            empty_return_phase,
             text: String::new(),
             mode: self.input_state.mode,
             context_before: self.input_state.context.clone(),
@@ -858,7 +896,9 @@ impl Backend {
         if registration.text.is_empty() {
             self.input_state.mode = registration.mode;
             self.input_state.context = registration.context_before;
-            self.input_state.phase = registration.source_phase;
+            self.input_state.phase = registration
+                .empty_return_phase
+                .unwrap_or(registration.source_phase);
             return Ok((true, None));
         }
 
@@ -987,6 +1027,33 @@ fn direct_mode_transition(command: Option<&str>, pending: &str) -> Option<InputM
         .is_empty()
         .then(|| command.and_then(input_mode_for_command))
         .flatten()
+}
+
+fn next_candidate_cursor(
+    cursor: usize,
+    candidate_count: usize,
+    window_threshold: usize,
+    page_size: usize,
+) -> Option<usize> {
+    let next = if cursor < window_threshold {
+        cursor.saturating_add(1)
+    } else {
+        let page = (cursor - window_threshold) / page_size;
+        window_threshold.saturating_add(page.saturating_add(1).saturating_mul(page_size))
+    };
+    (next < candidate_count).then_some(next)
+}
+
+fn previous_candidate_cursor(
+    cursor: usize,
+    window_threshold: usize,
+    page_size: usize,
+) -> Option<usize> {
+    if cursor <= window_threshold {
+        cursor.checked_sub(1)
+    } else {
+        Some(cursor.saturating_sub(page_size).max(window_threshold))
+    }
 }
 
 fn to_wide_latin(value: &str) -> String {
@@ -1289,5 +1356,25 @@ mod tests {
             direct_mode_transition(Some("set-input-mode-latin"), "k"),
             None
         );
+    }
+
+    #[test]
+    fn candidate_cursor_advances_individually_then_by_page() {
+        assert_eq!(next_candidate_cursor(0, 20, 3, 8), Some(1));
+        assert_eq!(next_candidate_cursor(1, 20, 3, 8), Some(2));
+        assert_eq!(next_candidate_cursor(2, 20, 3, 8), Some(3));
+        assert_eq!(next_candidate_cursor(3, 20, 3, 8), Some(11));
+        assert_eq!(next_candidate_cursor(11, 20, 3, 8), Some(19));
+        assert_eq!(next_candidate_cursor(19, 20, 3, 8), None);
+    }
+
+    #[test]
+    fn candidate_cursor_rewinds_by_page_then_individually() {
+        assert_eq!(previous_candidate_cursor(19, 3, 8), Some(11));
+        assert_eq!(previous_candidate_cursor(11, 3, 8), Some(3));
+        assert_eq!(previous_candidate_cursor(3, 3, 8), Some(2));
+        assert_eq!(previous_candidate_cursor(2, 3, 8), Some(1));
+        assert_eq!(previous_candidate_cursor(1, 3, 8), Some(0));
+        assert_eq!(previous_candidate_cursor(0, 3, 8), None);
     }
 }

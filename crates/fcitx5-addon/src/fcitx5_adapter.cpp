@@ -48,6 +48,10 @@ struct SkkZenzUpdate {
     bool rerankPending;
     std::size_t evaluatedCandidateCount;
     std::size_t totalCandidateCount;
+    bool candidateWindowVisible;
+    std::size_t candidatePageStart;
+    std::size_t candidatePageSize;
+    bool showAnnotations;
 };
 
 using SkkZenzUpdateCallback =
@@ -379,7 +383,8 @@ public:
         }
 
         const auto candidateIndex = event.key().digitSelection();
-        if (candidateIndex >= 0 && candidateIndex < 9 &&
+        if (candidateWindowVisible_ && candidateIndex >= 0 &&
+            candidateIndex < 9 &&
             candidatePageOffset_ +
                     static_cast<std::size_t>(candidateIndex) <
                 candidateCount_) {
@@ -446,14 +451,30 @@ public:
         }
 
         auto &panel = inputContext->inputPanel();
+        candidateWindowVisible_ = update.candidateWindowVisible;
+        std::string auxiliary;
+        if (!update.candidateWindowVisible &&
+            update.selectedCandidate < update.candidateCount) {
+            const auto &candidate =
+                update.candidates[update.selectedCandidate];
+            auxiliary = candidate.text;
+            if (update.showAnnotations && candidate.annotation &&
+                candidate.annotation[0] != '\0') {
+                auxiliary += " [";
+                auxiliary += candidate.annotation;
+                auxiliary += "]";
+            }
+        }
         if (update.rerankPending) {
-            panel.setAuxDown(fcitx::Text(
+            if (!auxiliary.empty()) {
+                auxiliary += "  ";
+            }
+            auxiliary +=
                 "AI " +
                 std::to_string(update.evaluatedCandidateCount) + "/" +
-                std::to_string(update.totalCandidateCount)));
-        } else {
-            panel.setAuxDown({});
+                std::to_string(update.totalCandidateCount);
         }
+        panel.setAuxDown(fcitx::Text(auxiliary));
         if (modeChanged && update.preedit[0] == '\0' &&
             update.candidateCount == 0) {
             candidateCount_ = 0;
@@ -470,21 +491,36 @@ public:
         }
 
         const fcitx::Text preedit(update.preedit);
-        panel.setClientPreedit(preedit);
-        panel.setPreedit(preedit);
+        if (inputContext->capabilityFlags().test(
+                fcitx::CapabilityFlag::Preedit)) {
+            panel.setClientPreedit(preedit);
+            panel.setPreedit(fcitx::Text());
+        } else {
+            panel.setClientPreedit(fcitx::Text());
+            panel.setPreedit(preedit);
+        }
 
         if (update.candidateCount == 0) {
             candidateCount_ = 0;
             candidatePageOffset_ = 0;
             panel.setCandidateList(nullptr);
+        } else if (!update.candidateWindowVisible) {
+            candidateCount_ = update.candidateCount;
+            candidatePageOffset_ = 0;
+            panel.setCandidateList(nullptr);
         } else {
             candidateCount_ = update.candidateCount;
+            const auto relativeSelected =
+                update.selectedCandidate - update.candidatePageStart;
             candidatePageOffset_ =
                 update.selectedCandidate < update.candidateCount
-                    ? update.selectedCandidate / 9 * 9
-                    : 0;
+                    ? update.candidatePageStart +
+                          relativeSelected / update.candidatePageSize *
+                              update.candidatePageSize
+                    : update.candidatePageStart;
             auto candidates = std::make_unique<fcitx::CommonCandidateList>();
-            candidates->setPageSize(9);
+            candidates->setPageSize(
+                static_cast<int>(update.candidatePageSize));
             candidates->setLayoutHint(
                 fcitx::CandidateLayoutHint::Vertical);
             candidates->setSelectionKey({
@@ -494,19 +530,26 @@ public:
                 fcitx::Key(FcitxKey_7), fcitx::Key(FcitxKey_8),
                 fcitx::Key(FcitxKey_9),
             });
-            for (std::size_t index = 0; index < update.candidateCount; ++index) {
+            for (
+                std::size_t index = update.candidatePageStart;
+                index < update.candidateCount; ++index) {
                 const auto &candidate = update.candidates[index];
                 candidates->append<CallbackCandidate>(
                     fcitx::Text(candidate.text),
                     fcitx::Text(
-                        candidate.annotation ? candidate.annotation : ""),
+                        update.showAnnotations && candidate.annotation
+                            ? candidate.annotation
+                            : ""),
                     [this, index](fcitx::InputContext *context) {
                         selectCandidate(context, index);
                     });
             }
             if (update.selectedCandidate < update.candidateCount) {
                 candidates->setGlobalCursorIndex(
-                    static_cast<int>(update.selectedCandidate));
+                    static_cast<int>(relativeSelected));
+                candidates->setPage(
+                    static_cast<int>(
+                        relativeSelected / update.candidatePageSize));
             }
             panel.setCandidateList(std::move(candidates));
         }
@@ -673,6 +716,7 @@ private:
     std::string trackedContext_;
     std::size_t candidateCount_ = 0;
     std::size_t candidatePageOffset_ = 0;
+    bool candidateWindowVisible_ = false;
     std::uint8_t lastInputMode_ = 0;
     std::unique_ptr<ModeAction> modeAction_;
     std::unique_ptr<fcitx::Menu> modeMenu_;

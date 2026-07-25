@@ -31,6 +31,10 @@ pub struct InputUpdate {
     pub commit: Option<String>,
     pub input_mode: InputMode,
     pub rerank_progress: Option<(usize, usize)>,
+    pub candidate_window_visible: bool,
+    pub candidate_page_start: usize,
+    pub candidate_page_size: usize,
+    pub show_annotations: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -73,6 +77,7 @@ pub(crate) struct Registration {
     pub(crate) input: String,
     pub(crate) okuri: Option<String>,
     pub(crate) source_phase: Phase,
+    pub(crate) empty_return_phase: Option<Phase>,
     pub(crate) text: String,
     pub(crate) mode: InputMode,
     pub(crate) context_before: String,
@@ -285,6 +290,7 @@ mod tests {
                 input: "かぱ".to_owned(),
                 okuri: None,
                 source_phase: source_phase.clone(),
+                empty_return_phase: None,
                 text: "下".to_owned(),
                 mode: InputMode::Hiragana,
                 context_before: String::new(),
@@ -297,6 +303,7 @@ mod tests {
             input: "か".to_owned(),
             okuri: Some("え".to_owned()),
             source_phase,
+            empty_return_phase: None,
             text: String::new(),
             mode: InputMode::Hiragana,
             context_before: "下".to_owned(),
