@@ -17,7 +17,7 @@ SKKを現代的にしたいな!というモチベでPoCを作ってみます
 ### ソート順序
 
 使いやすさに直結するはずで、要検証&調整。
-現在は、(from_user?: bool, recency: number, ai_rank: float)をkeyとしています
+設定で変更できます。デフォルトでは、まずユーザ辞書にあるかどうかで二分し、okuri-ariのときはZenzによるソートを使用、それ以外ではfrequencyを使用。
 
 ## roadmap (todo)
 
@@ -77,10 +77,17 @@ context_size = 1024
 # threads = 8
 gpu_layers = 999
 recency_half_life_days = 14.0
+
+[candidate_order]
+okuri_ari = ["from_user", "ai_score"]
+okuri_nasi = ["from_user", "recency"]
+abbrev = ["from_user", "recency"]
 ```
 
 ユーザ辞書は同じディレクトリの`user.sqlite3`
 候補の使用頻度は時間とともに指数減衰し、`recency_half_life_days`で半減期を日数指定できます。
+候補順は`candidate_order`の各listへ優先順に`from_user`、`recency`、`ai_score`を指定します。
+`ai_score`を含む種類の変換だけzenzによるスコアリングを行います。
 system辞書は`~/.config/skk-zenz/dictionary_list`へ1行1ファイルで指定 相対パスも使えます
 
 このファイルがない場合は `$XDG_DATA_HOME/fcitx5/skk/dictionary_list`を代わりに使用します

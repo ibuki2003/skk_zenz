@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,8 +19,38 @@ pub struct BackendConfig {
     pub system_dictionaries: Vec<PathBuf>,
     pub user_dictionary: PathBuf,
     pub recency_half_life_days: f64,
+    pub candidate_order: CandidateOrderConfig,
     pub rom_kana_rule: String,
     pub rule_search_paths: Vec<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateSortKey {
+    FromUser,
+    Recency,
+    AiScore,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateOrderConfig {
+    #[serde(default = "default_sort_order_ai")]
+    pub okuri_ari: Vec<CandidateSortKey>,
+    #[serde(default = "default_sort_order_recency")]
+    pub okuri_nasi: Vec<CandidateSortKey>,
+    #[serde(default = "default_sort_order_recency")]
+    pub abbrev: Vec<CandidateSortKey>,
+}
+
+impl Default for CandidateOrderConfig {
+    fn default() -> Self {
+        Self {
+            okuri_ari: default_sort_order_ai(),
+            okuri_nasi: default_sort_order_recency(),
+            abbrev: default_sort_order_recency(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +67,8 @@ struct ConfigFile {
     gpu_layers: u32,
     #[serde(default = "default_recency_half_life_days")]
     recency_half_life_days: f64,
+    #[serde(default)]
+    candidate_order: CandidateOrderConfig,
 }
 
 impl BackendConfig {
@@ -59,6 +92,7 @@ impl BackendConfig {
         {
             anyhow::bail!("recency_half_life_days は正の有限値にしてください");
         }
+        file.candidate_order.validate()?;
         let base = path.parent().unwrap_or_else(|| Path::new(""));
         let config_dir = config_dir()?;
         let model_path = match file.model_path {
@@ -78,9 +112,26 @@ impl BackendConfig {
             system_dictionaries: load_dictionary_paths(&config_dir)?,
             user_dictionary: config_dir.join(USER_DICTIONARY),
             recency_half_life_days: file.recency_half_life_days,
+            candidate_order: file.candidate_order,
             rom_kana_rule: file.rom_kana_rule,
             rule_search_paths: rule_search_paths(&config_dir)?,
         })
+    }
+}
+
+impl CandidateOrderConfig {
+    fn validate(&self) -> Result<()> {
+        for (name, order) in [
+            ("okuri_ari", &self.okuri_ari),
+            ("okuri_nasi", &self.okuri_nasi),
+            ("abbrev", &self.abbrev),
+        ] {
+            let mut seen = HashSet::new();
+            if let Some(duplicate) = order.iter().find(|key| !seen.insert(**key)) {
+                anyhow::bail!("candidate_order.{name} に重複があります: {duplicate:?}");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -213,6 +264,14 @@ const fn default_recency_half_life_days() -> f64 {
     14.0
 }
 
+fn default_sort_order_ai() -> Vec<CandidateSortKey> {
+    vec![CandidateSortKey::FromUser, CandidateSortKey::AiScore]
+}
+
+fn default_sort_order_recency() -> Vec<CandidateSortKey> {
+    vec![CandidateSortKey::FromUser, CandidateSortKey::Recency]
+}
+
 fn default_rom_kana_rule() -> String {
     "default".to_owned()
 }
@@ -238,7 +297,42 @@ mod tests {
         assert_eq!(file.context_size, 1024);
         assert_eq!(file.gpu_layers, 999);
         assert_eq!(file.recency_half_life_days, 14.0);
+        assert_eq!(file.candidate_order, CandidateOrderConfig::default());
         assert_eq!(file.rom_kana_rule, "default");
+    }
+
+    #[test]
+    fn parses_candidate_order() {
+        let file: ConfigFile = toml::from_str(
+            r#"
+            model_path = "model.gguf"
+
+            [candidate_order]
+            okuri_ari = ["ai_score", "recency"]
+            okuri_nasi = ["from_user"]
+            abbrev = []
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            file.candidate_order.okuri_ari,
+            [CandidateSortKey::AiScore, CandidateSortKey::Recency]
+        );
+        assert_eq!(
+            file.candidate_order.okuri_nasi,
+            [CandidateSortKey::FromUser]
+        );
+        assert!(file.candidate_order.abbrev.is_empty());
+        file.candidate_order.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_duplicate_candidate_order_keys() {
+        let order = CandidateOrderConfig {
+            okuri_ari: vec![CandidateSortKey::Recency, CandidateSortKey::Recency],
+            ..CandidateOrderConfig::default()
+        };
+        assert!(order.validate().is_err());
     }
 
     #[test]

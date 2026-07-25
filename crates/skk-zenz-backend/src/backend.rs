@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
 use crate::candidate::{Candidate, CandidateSource, DictionaryCandidate};
-use crate::config::BackendConfig;
+use crate::config::{BackendConfig, CandidateOrderConfig, CandidateSortKey};
 use crate::dictionary::{Dictionary, SkkFileDictionary, UserDictionary, open_system_dictionaries};
 use crate::input::{
     Composition, InputEvent, InputMode, InputState, InputUpdate, Phase, SelectionOrigin,
@@ -17,6 +17,7 @@ pub struct Backend {
     user_dictionary: UserDictionary,
     rom_kana_rule: RomKanaRule,
     keymaps: HashMap<InputMode, Keymap>,
+    candidate_order: CandidateOrderConfig,
     input_state: InputState,
 }
 
@@ -44,6 +45,7 @@ impl Backend {
             )?,
             rom_kana_rule: RomKanaRule::load(&config.rom_kana_rule, &config.rule_search_paths)?,
             keymaps,
+            candidate_order: config.candidate_order,
             input_state: InputState::default(),
         })
     }
@@ -87,6 +89,7 @@ impl Backend {
         };
         if prepare_speculatively
             && commit.is_none()
+            && self.current_order_uses_ai_score()
             && let Some(input) = self.input_state.speculative_input()
         {
             let context = self.input_state.context.clone();
@@ -103,6 +106,16 @@ impl Backend {
         Ok(update)
     }
 
+    fn current_order_uses_ai_score(&self) -> bool {
+        let order = match &self.input_state.phase {
+            Phase::Preedit { okuri: Some(_), .. } => &self.candidate_order.okuri_ari,
+            Phase::Preedit { okuri: None, .. } => &self.candidate_order.okuri_nasi,
+            Phase::Abbrev { .. } => &self.candidate_order.abbrev,
+            Phase::Direct | Phase::Selecting { .. } => return false,
+        };
+        order.contains(&CandidateSortKey::AiScore)
+    }
+
     pub fn lookup(
         &mut self,
         context: &str,
@@ -110,6 +123,13 @@ impl Backend {
         okuri: Option<&str>,
     ) -> Result<Vec<Candidate>> {
         eprintln!("[BACKEND] lookup context={context:?} input={input:?} okuri={okuri:?}");
+        let order = if okuri.is_some() {
+            self.candidate_order.okuri_ari.clone()
+        } else {
+            self.candidate_order.okuri_nasi.clone()
+        };
+        eprintln!("[BACKEND] lookup order={order:?}");
+        let use_ai_score = order.contains(&CandidateSortKey::AiScore);
         let dictionary_candidates = self.lookup_dictionaries(input, okuri)?;
 
         let mut candidates = Vec::with_capacity(dictionary_candidates.len());
@@ -119,7 +139,11 @@ impl Backend {
                 candidate.text,
                 candidate.okuri.as_deref().unwrap_or_default()
             );
-            let score = self.scorer.score(context, input, &output)?;
+            let score = if use_ai_score {
+                self.scorer.score(context, input, &output)?
+            } else {
+                Score::default()
+            };
             candidates.push(Candidate {
                 input: candidate.input,
                 okuri: candidate.okuri,
@@ -132,12 +156,7 @@ impl Backend {
                 recency: candidate.recency,
             });
         }
-        candidates.sort_by(|left, right| {
-            source_order(left.source)
-                .cmp(&source_order(right.source))
-                .then_with(|| recency_order(left.recency, right.recency))
-                .then_with(|| left.loss.total_cmp(&right.loss))
-        });
+        candidates.sort_by(|left, right| compare_candidates(left, right, &order));
         eprint!("[BACKEND] lookup -> ");
         for candidate in &candidates {
             eprint!(
@@ -148,29 +167,33 @@ impl Backend {
         Ok(candidates)
     }
 
-    fn lookup_abbrev(&self, input: &str) -> Result<Vec<Candidate>> {
-        let mut candidates = self
-            .lookup_dictionaries(input, None)?
-            .into_iter()
-            .map(|candidate| {
-                Ok(Candidate {
-                    input: candidate.input,
-                    okuri: None,
-                    output: candidate.text.clone(),
-                    text: candidate.text,
-                    annotation: candidate.annotation,
-                    source: candidate.source,
-                    loss: 0.0,
-                    token_count: 0,
-                    recency: candidate.recency,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        candidates.sort_by(|left, right| {
-            source_order(left.source)
-                .cmp(&source_order(right.source))
-                .then_with(|| recency_order(left.recency, right.recency))
-        });
+    fn lookup_abbrev(&mut self, input: &str) -> Result<Vec<Candidate>> {
+        let order = self.candidate_order.abbrev.clone();
+        eprintln!("[BACKEND] abbr lookup order={order:?}");
+        let use_ai_score = order.contains(&CandidateSortKey::AiScore);
+        let context = self.input_state.context.clone();
+        let dictionary_candidates = self.lookup_dictionaries(input, None)?;
+        let mut candidates = Vec::with_capacity(dictionary_candidates.len());
+        for candidate in dictionary_candidates {
+            let output = candidate.text.clone();
+            let score = if use_ai_score {
+                self.scorer.score(&context, input, &output)?
+            } else {
+                Score::default()
+            };
+            candidates.push(Candidate {
+                input: candidate.input,
+                okuri: None,
+                text: candidate.text,
+                output,
+                annotation: candidate.annotation,
+                source: candidate.source,
+                loss: score.loss,
+                token_count: score.token_count,
+                recency: candidate.recency,
+            });
+        }
+        candidates.sort_by(|left, right| compare_candidates(left, right, &order));
         Ok(candidates)
     }
 
@@ -717,10 +740,25 @@ fn source_order(source: CandidateSource) -> u8 {
     }
 }
 
-fn recency_order(left: Option<f64>, right: Option<f64>) -> std::cmp::Ordering {
-    right
-        .unwrap_or_default()
-        .total_cmp(&left.unwrap_or_default())
+fn compare_candidates(
+    left: &Candidate,
+    right: &Candidate,
+    order: &[CandidateSortKey],
+) -> std::cmp::Ordering {
+    order
+        .iter()
+        .map(|key| match key {
+            CandidateSortKey::FromUser => {
+                source_order(left.source).cmp(&source_order(right.source))
+            }
+            CandidateSortKey::Recency => right
+                .recency
+                .unwrap_or_default()
+                .total_cmp(&left.recency.unwrap_or_default()),
+            CandidateSortKey::AiScore => left.loss.total_cmp(&right.loss),
+        })
+        .find(|ordering| !ordering.is_eq())
+        .unwrap_or(std::cmp::Ordering::Equal)
 }
 
 impl From<&Candidate> for DictionaryCandidate {
@@ -825,12 +863,36 @@ mod tests {
     }
 
     #[test]
-    fn higher_decayed_frequency_sorts_first() {
+    fn candidate_order_follows_configured_key_priority() {
+        let candidate = |recency, loss| Candidate {
+            input: String::new(),
+            okuri: None,
+            text: String::new(),
+            output: String::new(),
+            annotation: None,
+            source: CandidateSource::System,
+            loss,
+            token_count: 0,
+            recency,
+        };
+        let frequent = candidate(Some(2.0), 2.0);
+        let accurate = candidate(Some(1.0), 1.0);
         assert_eq!(
-            recency_order(Some(2.0), Some(1.0)),
+            compare_candidates(
+                &frequent,
+                &accurate,
+                &[CandidateSortKey::Recency, CandidateSortKey::AiScore],
+            ),
             std::cmp::Ordering::Less
         );
-        assert_eq!(recency_order(None, Some(1.0)), std::cmp::Ordering::Greater);
+        assert_eq!(
+            compare_candidates(
+                &frequent,
+                &accurate,
+                &[CandidateSortKey::AiScore, CandidateSortKey::Recency],
+            ),
+            std::cmp::Ordering::Greater
+        );
     }
 
     #[test]
