@@ -45,6 +45,7 @@ struct SkkZenzUpdate {
     std::size_t candidateCount;
     std::size_t selectedCandidate;
     std::uint8_t inputMode;
+    bool rerankPending;
 };
 
 using SkkZenzUpdateCallback =
@@ -64,6 +65,9 @@ bool skk_zenz_backend_reset(
     SkkZenzBackend *backend, void *userData, SkkZenzUpdateCallback callback);
 bool skk_zenz_backend_set_input_mode(
     SkkZenzBackend *backend, std::uint8_t mode, void *userData,
+    SkkZenzUpdateCallback callback);
+bool skk_zenz_backend_poll_rerank(
+    SkkZenzBackend *backend, void *userData,
     SkkZenzUpdateCallback callback);
 bool skk_zenz_backend_select_candidate(
     SkkZenzBackend *backend, std::size_t index, void *userData,
@@ -288,6 +292,29 @@ public:
                 modeSubActions_.back().get());
             modeMenu_->addAction(modeSubActions_.back().get());
         }
+        rerankTimer_ = instance_->eventLoop().addTimeEvent(
+            CLOCK_MONOTONIC,
+            fcitx::now(CLOCK_MONOTONIC) + 16'000, 0,
+            [this](
+                fcitx::EventSourceTime *timer, std::uint64_t) {
+                auto *backend =
+                    backend_.load(std::memory_order_acquire);
+                if (!backend || !rerankContext_) {
+                    timer->setEnabled(false);
+                    return true;
+                }
+                UpdateTarget target{this, rerankContext_, nullptr};
+                if (skk_zenz_backend_poll_rerank(
+                        backend, &target, updateCallback)) {
+                    timer->setNextInterval(16'000);
+                    timer->setOneShot();
+                } else {
+                    rerankContext_ = nullptr;
+                    timer->setEnabled(false);
+                }
+                return true;
+            });
+        rerankTimer_->setEnabled(false);
         eventHandlers_.emplace_back(instance_->watchEvent(
             fcitx::EventType::InputContextKeyEvent,
             fcitx::EventWatcherPhase::PostInputMethod,
@@ -334,6 +361,7 @@ public:
     }
 
     ~SkkZenzEngine() override {
+        rerankTimer_.reset();
         initializationThread_.join();
         skk_zenz_backend_free(
             backend_.load(std::memory_order_acquire));
@@ -404,6 +432,7 @@ public:
     void applyUpdate(
         fcitx::InputContext *inputContext, fcitx::KeyEvent *keyEvent,
         const SkkZenzUpdate &update) {
+        updateRerankPolling(inputContext, update.rerankPending);
         if (update.commit) {
             inputContext->commitString(update.commit);
         }
@@ -597,6 +626,21 @@ private:
             backend, mode, &target, updateCallback);
     }
 
+    void updateRerankPolling(
+        fcitx::InputContext *inputContext, bool pending) {
+        if (!pending) {
+            if (rerankContext_ == inputContext) {
+                rerankContext_ = nullptr;
+                rerankTimer_->setEnabled(false);
+            }
+            return;
+        }
+        rerankContext_ = inputContext;
+        rerankTimer_->setNextInterval(16'000);
+        rerankTimer_->setOneShot();
+        rerankTimer_->setEnabled(true);
+    }
+
     std::string subMode(
         const fcitx::InputMethodEntry &,
         fcitx::InputContext &) override {
@@ -623,6 +667,8 @@ private:
     std::unique_ptr<ModeAction> modeAction_;
     std::unique_ptr<fcitx::Menu> modeMenu_;
     std::vector<std::unique_ptr<ModeSubAction>> modeSubActions_;
+    fcitx::InputContext *rerankContext_ = nullptr;
+    std::unique_ptr<fcitx::EventSourceTime> rerankTimer_;
 };
 
 class SkkZenzEngineFactory final : public fcitx::AddonFactory {

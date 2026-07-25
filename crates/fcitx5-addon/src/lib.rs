@@ -21,6 +21,7 @@ pub struct FfiUpdate {
     candidate_count: usize,
     selected_candidate: usize,
     input_mode: u8,
+    rerank_pending: bool,
 }
 
 pub type UpdateCallback = unsafe extern "C" fn(*mut c_void, *const FfiUpdate);
@@ -33,7 +34,12 @@ unsafe fn required_str<'a>(value: *const c_char) -> Option<&'a str> {
     unsafe { CStr::from_ptr(value) }.to_str().ok()
 }
 
-fn with_update(update: &InputUpdate, user_data: *mut c_void, callback: UpdateCallback) {
+fn with_update(
+    update: &InputUpdate,
+    rerank_pending: bool,
+    user_data: *mut c_void,
+    callback: UpdateCallback,
+) {
     let preedit = nul_terminated(&update.preedit);
     let commit = update.commit.as_deref().map(nul_terminated);
     let texts: Vec<Vec<u8>> = update
@@ -72,6 +78,7 @@ fn with_update(update: &InputUpdate, user_data: *mut c_void, callback: UpdateCal
             skk_zenz_backend::InputMode::Latin => 3,
             skk_zenz_backend::InputMode::WideLatin => 4,
         },
+        rerank_pending,
     };
     // SAFETY: All pointers in ffi_update remain valid for the synchronous callback.
     unsafe { callback(user_data, &raw const ffi_update) };
@@ -100,7 +107,7 @@ fn dispatch(
     };
     match backend.handle_event(event) {
         Ok(update) => {
-            with_update(&update, user_data, callback);
+            with_update(&update, backend.rerank_pending(), user_data, callback);
             true
         }
         Err(error) => {
@@ -108,6 +115,27 @@ fn dispatch(
             false
         }
     }
+}
+
+/// Applies any completed asynchronous candidate evaluations.
+///
+/// # Safety
+/// `backend` must be a live pointer returned by this library and callback must
+/// be callable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn skk_zenz_backend_poll_rerank(
+    backend: *mut Backend,
+    user_data: *mut c_void,
+    callback: UpdateCallback,
+) -> bool {
+    // SAFETY: backend is created and exclusively owned by the C++ engine.
+    let Some(backend) = (unsafe { backend.as_mut() }) else {
+        return false;
+    };
+    if let Some(update) = backend.poll_rerank() {
+        with_update(&update, backend.rerank_pending(), user_data, callback);
+    }
+    backend.rerank_pending()
 }
 
 /// Creates the backend from a TOML file.

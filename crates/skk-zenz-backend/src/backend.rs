@@ -11,16 +11,23 @@ use crate::input::{
 use crate::keymap::{KeyEvent, Keymap, Modifiers};
 use crate::numeric::NumericInput;
 use crate::rom_kana::{KanaConversion, KanaMode, RomKanaRule, convert_kana_script};
-use crate::zenz::{Score, ZenzScorer};
+use crate::zenz::{RerankUpdate, Score, ZenzWorker};
+
+#[derive(Clone, Debug)]
+struct ActiveRerank {
+    generation: u64,
+    order: Vec<CandidateSortKey>,
+}
 
 pub struct Backend {
-    scorer: ZenzScorer,
+    scorer: ZenzWorker,
     system_dictionaries: Vec<SkkFileDictionary>,
     user_dictionary: UserDictionary,
     rom_kana_rule: RomKanaRule,
     keymaps: HashMap<InputMode, Keymap>,
     candidate_order: CandidateOrderConfig,
     input_state: InputState,
+    active_rerank: Option<ActiveRerank>,
 }
 
 impl Backend {
@@ -39,7 +46,7 @@ impl Backend {
         })
         .collect::<Result<_>>()?;
         Ok(Self {
-            scorer: ZenzScorer::load(&config.zenz)?,
+            scorer: ZenzWorker::load(config.zenz)?,
             system_dictionaries: open_system_dictionaries(&config.system_dictionaries)?,
             user_dictionary: UserDictionary::open(
                 &config.user_dictionary,
@@ -49,11 +56,13 @@ impl Backend {
             keymaps,
             candidate_order: config.candidate_order,
             input_state: InputState::default(),
+            active_rerank: None,
         })
     }
 
     pub fn clear_cache(&mut self) {
         self.scorer.clear();
+        self.active_rerank = None;
     }
 
     pub fn prepare(&mut self, context: &str, input: &str) -> Result<Score> {
@@ -116,15 +125,73 @@ impl Backend {
             let context = self.input_state.context.clone();
             self.prepare(&context, &input)?;
         }
-        let update = InputUpdate {
+        Ok(self.input_update(consumed, commit))
+    }
+
+    pub fn poll_rerank(&mut self) -> Option<InputUpdate> {
+        let mut updates = Vec::new();
+        while let Some(update) = self.scorer.try_update() {
+            updates.push(update);
+        }
+        let mut changed = false;
+        for update in updates {
+            match update {
+                RerankUpdate::Candidate {
+                    generation,
+                    candidate,
+                } => {
+                    let Some(active) = &self.active_rerank else {
+                        continue;
+                    };
+                    if active.generation != generation {
+                        continue;
+                    }
+                    let Phase::Selecting {
+                        candidates, cursor, ..
+                    } = &mut self.input_state.phase
+                    else {
+                        continue;
+                    };
+                    merge_reranked_candidate(candidates, cursor, candidate, &active.order);
+                    changed = true;
+                }
+                RerankUpdate::Finished { generation } => {
+                    if self
+                        .active_rerank
+                        .as_ref()
+                        .is_some_and(|active| active.generation == generation)
+                    {
+                        self.active_rerank = None;
+                    }
+                }
+                RerankUpdate::Failed { generation, error } => {
+                    if self
+                        .active_rerank
+                        .as_ref()
+                        .is_some_and(|active| active.generation == generation)
+                    {
+                        eprintln!("skk-zenz: asynchronous rerank failed: {error}");
+                        self.active_rerank = None;
+                    }
+                }
+            }
+        }
+        changed.then(|| self.input_update(false, None))
+    }
+
+    pub fn rerank_pending(&self) -> bool {
+        self.active_rerank.is_some() && matches!(self.input_state.phase, Phase::Selecting { .. })
+    }
+
+    fn input_update(&self, consumed: bool, commit: Option<String>) -> InputUpdate {
+        InputUpdate {
             consumed,
             preedit: self.input_state.preedit(),
             candidates: self.input_state.candidates(),
             selected_candidate: self.input_state.selected_candidate(),
             commit,
             input_mode: self.input_state.mode,
-        };
-        Ok(update)
+        }
     }
 
     fn current_order_uses_ai_score(&self) -> bool {
@@ -150,7 +217,6 @@ impl Backend {
             self.candidate_order.okuri_nasi.clone()
         };
         eprintln!("[BACKEND] lookup order={order:?}");
-        let use_ai_score = order.contains(&CandidateSortKey::AiScore);
         let numeric_input = NumericInput::extract(input);
         let dictionary_candidates =
             self.lookup_dictionaries(input, okuri, numeric_input.as_ref())?;
@@ -159,11 +225,6 @@ impl Backend {
         for candidate in dictionary_candidates {
             for text in self.expand_numeric_candidate(&candidate, numeric_input.as_ref())? {
                 let output = format!("{text}{}", candidate.okuri.as_deref().unwrap_or_default());
-                let score = if use_ai_score {
-                    self.scorer.score(context, input, &output)?
-                } else {
-                    Score::default()
-                };
                 candidates.push(Candidate {
                     input: candidate.input.clone(),
                     okuri: candidate.okuri.clone(),
@@ -171,14 +232,13 @@ impl Backend {
                     output,
                     annotation: candidate.annotation.clone(),
                     source: candidate.source,
-                    loss: score.loss,
-                    token_count: score.token_count,
+                    loss: 0.0,
+                    token_count: 0,
                     recency: candidate.recency,
                 });
             }
         }
-        candidates.sort_by(|left, right| compare_candidates(left, right, &order));
-        deduplicate_candidate_outputs(&mut candidates);
+        let candidates = self.rerank_candidates(context, input, candidates, &order)?;
         eprint!("[BACKEND] lookup -> ");
         for candidate in &candidates {
             eprint!(
@@ -192,7 +252,6 @@ impl Backend {
     fn lookup_abbrev(&mut self, input: &str) -> Result<Vec<Candidate>> {
         let order = self.candidate_order.abbrev.clone();
         eprintln!("[BACKEND] abbr lookup order={order:?}");
-        let use_ai_score = order.contains(&CandidateSortKey::AiScore);
         let context = self.input_state.context.clone();
         let numeric_input = NumericInput::extract(input);
         let dictionary_candidates =
@@ -200,11 +259,6 @@ impl Backend {
         let mut candidates = Vec::with_capacity(dictionary_candidates.len());
         for candidate in dictionary_candidates {
             for output in self.expand_numeric_candidate(&candidate, numeric_input.as_ref())? {
-                let score = if use_ai_score {
-                    self.scorer.score(&context, input, &output)?
-                } else {
-                    Score::default()
-                };
                 candidates.push(Candidate {
                     input: candidate.input.clone(),
                     okuri: None,
@@ -212,15 +266,45 @@ impl Backend {
                     output,
                     annotation: candidate.annotation.clone(),
                     source: candidate.source,
-                    loss: score.loss,
-                    token_count: score.token_count,
+                    loss: 0.0,
+                    token_count: 0,
                     recency: candidate.recency,
                 });
             }
         }
-        candidates.sort_by(|left, right| compare_candidates(left, right, &order));
+        self.rerank_candidates(&context, input, candidates, &order)
+    }
+
+    fn rerank_candidates(
+        &mut self,
+        context: &str,
+        input: &str,
+        mut candidates: Vec<Candidate>,
+        order: &[CandidateSortKey],
+    ) -> Result<Vec<Candidate>> {
+        let initial_order: Vec<_> = order
+            .iter()
+            .copied()
+            .filter(|key| *key != CandidateSortKey::AiScore)
+            .collect();
+        candidates.sort_by(|left, right| compare_candidates(left, right, &initial_order));
         deduplicate_candidate_outputs(&mut candidates);
-        Ok(candidates)
+        if candidates.is_empty() {
+            self.active_rerank = None;
+            return Ok(candidates);
+        }
+        if !order.contains(&CandidateSortKey::AiScore) {
+            self.active_rerank = None;
+            return Ok(candidates);
+        }
+
+        let (generation, mut initial) = self.scorer.rerank(context, input, candidates)?;
+        initial.sort_by(|left, right| compare_candidates(left, right, order));
+        self.active_rerank = Some(ActiveRerank {
+            generation,
+            order: order.to_vec(),
+        });
+        Ok(initial)
     }
 
     fn lookup_dictionaries(
@@ -934,6 +1018,26 @@ fn deduplicate_candidate_outputs(candidates: &mut Vec<Candidate>) {
     candidates.retain(|candidate| seen.insert(candidate.output.clone()));
 }
 
+fn merge_reranked_candidate(
+    candidates: &mut Vec<Candidate>,
+    cursor: &mut usize,
+    candidate: Candidate,
+    order: &[CandidateSortKey],
+) {
+    let selected = candidates
+        .get(*cursor)
+        .map(|candidate| candidate.output.clone());
+    candidates.push(candidate);
+    candidates.sort_by(|left, right| compare_candidates(left, right, order));
+    if let Some(selected) = selected
+        && let Some(index) = candidates
+            .iter()
+            .position(|candidate| candidate.output == selected)
+    {
+        *cursor = index;
+    }
+}
+
 impl From<&Candidate> for DictionaryCandidate {
     fn from(candidate: &Candidate) -> Self {
         Self {
@@ -1080,6 +1184,39 @@ mod tests {
             ),
             std::cmp::Ordering::Greater
         );
+    }
+
+    #[test]
+    fn asynchronous_rerank_preserves_selected_candidate() {
+        let candidate = |output: &str, loss| Candidate {
+            input: String::new(),
+            okuri: None,
+            text: output.to_owned(),
+            output: output.to_owned(),
+            annotation: None,
+            source: CandidateSource::System,
+            loss,
+            token_count: 1,
+            recency: None,
+        };
+        let mut candidates = vec![candidate("second", 2.0), candidate("third", 3.0)];
+        let mut cursor = 1;
+
+        merge_reranked_candidate(
+            &mut candidates,
+            &mut cursor,
+            candidate("first", 1.0),
+            &[CandidateSortKey::AiScore],
+        );
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.output.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
+        assert_eq!(candidates[cursor].output, "third");
     }
 
     #[test]
