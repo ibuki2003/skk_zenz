@@ -1132,17 +1132,6 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
-]
-
-[[package]]
-name = "skk-zenz-bench"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "hf-hub",
- "llama-cpp-2",
- "skk-zenz-backend",
  "unicode-width",
 ]
 

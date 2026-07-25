@@ -9,7 +9,7 @@ use skk_zenz_backend::zenz::{ZenzConfig, ZenzScorer};
 use unicode_width::UnicodeWidthStr;
 
 const MODEL_FILE: &str = "ggml-model-Q5_K_M.gguf";
-const DEFAULT_SCRIPT: &str = include_str!("../cases.script");
+const DEFAULT_SCRIPT: &str = include_str!("zenz-bench-cases.script");
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ModelSize {
