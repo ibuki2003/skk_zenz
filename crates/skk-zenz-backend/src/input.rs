@@ -30,6 +30,7 @@ pub struct InputUpdate {
     pub selected_candidate: Option<usize>,
     pub commit: Option<String>,
     pub input_mode: InputMode,
+    pub rerank_progress: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Debug, Default)]

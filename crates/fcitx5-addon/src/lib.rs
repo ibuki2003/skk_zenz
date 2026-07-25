@@ -22,6 +22,8 @@ pub struct FfiUpdate {
     selected_candidate: usize,
     input_mode: u8,
     rerank_pending: bool,
+    evaluated_candidate_count: usize,
+    total_candidate_count: usize,
 }
 
 pub type UpdateCallback = unsafe extern "C" fn(*mut c_void, *const FfiUpdate);
@@ -79,6 +81,8 @@ fn with_update(
             skk_zenz_backend::InputMode::WideLatin => 4,
         },
         rerank_pending,
+        evaluated_candidate_count: update.rerank_progress.map_or(0, |progress| progress.0),
+        total_candidate_count: update.rerank_progress.map_or(0, |progress| progress.1),
     };
     // SAFETY: All pointers in ffi_update remain valid for the synchronous callback.
     unsafe { callback(user_data, &raw const ffi_update) };

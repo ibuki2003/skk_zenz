@@ -46,6 +46,8 @@ struct SkkZenzUpdate {
     std::size_t selectedCandidate;
     std::uint8_t inputMode;
     bool rerankPending;
+    std::size_t evaluatedCandidateCount;
+    std::size_t totalCandidateCount;
 };
 
 using SkkZenzUpdateCallback =
@@ -444,6 +446,14 @@ public:
         }
 
         auto &panel = inputContext->inputPanel();
+        if (update.rerankPending) {
+            panel.setAuxDown(fcitx::Text(
+                "AI " +
+                std::to_string(update.evaluatedCandidateCount) + "/" +
+                std::to_string(update.totalCandidateCount)));
+        } else {
+            panel.setAuxDown({});
+        }
         if (modeChanged && update.preedit[0] == '\0' &&
             update.candidateCount == 0) {
             candidateCount_ = 0;

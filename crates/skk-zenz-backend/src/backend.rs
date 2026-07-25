@@ -17,6 +17,9 @@ use crate::zenz::{RerankUpdate, Score, ZenzWorker};
 struct ActiveRerank {
     generation: u64,
     order: Vec<CandidateSortKey>,
+    selection_touched: bool,
+    evaluated: usize,
+    total: usize,
 }
 
 pub struct Backend {
@@ -140,7 +143,7 @@ impl Backend {
                     generation,
                     candidate,
                 } => {
-                    let Some(active) = &self.active_rerank else {
+                    let Some(active) = &mut self.active_rerank else {
                         continue;
                     };
                     if active.generation != generation {
@@ -152,7 +155,14 @@ impl Backend {
                     else {
                         continue;
                     };
-                    merge_reranked_candidate(candidates, cursor, candidate, &active.order);
+                    merge_reranked_candidate(
+                        candidates,
+                        cursor,
+                        candidate,
+                        &active.order,
+                        active.selection_touched,
+                    );
+                    active.evaluated += 1;
                     changed = true;
                 }
                 RerankUpdate::Finished { generation } => {
@@ -162,6 +172,7 @@ impl Backend {
                         .is_some_and(|active| active.generation == generation)
                     {
                         self.active_rerank = None;
+                        changed = true;
                     }
                 }
                 RerankUpdate::Failed { generation, error } => {
@@ -172,6 +183,7 @@ impl Backend {
                     {
                         eprintln!("skk-zenz: asynchronous rerank failed: {error}");
                         self.active_rerank = None;
+                        changed = true;
                     }
                 }
             }
@@ -191,6 +203,11 @@ impl Backend {
             selected_candidate: self.input_state.selected_candidate(),
             commit,
             input_mode: self.input_state.mode,
+            rerank_progress: self
+                .active_rerank
+                .as_ref()
+                .filter(|_| self.rerank_pending())
+                .map(|active| (active.evaluated, active.total)),
         }
     }
 
@@ -298,11 +315,16 @@ impl Backend {
             return Ok(candidates);
         }
 
+        let total = candidates.len();
         let (generation, mut initial) = self.scorer.rerank(context, input, candidates)?;
+        let evaluated = initial.len();
         initial.sort_by(|left, right| compare_candidates(left, right, order));
         self.active_rerank = Some(ActiveRerank {
             generation,
             order: order.to_vec(),
+            selection_touched: false,
+            evaluated,
+            total,
         });
         Ok(initial)
     }
@@ -391,6 +413,13 @@ impl Backend {
             .get(&self.input_state.mode)
             .and_then(|keymap| keymap.lookup(&event))
             .map(str::to_owned);
+        if matches!(
+            command.as_deref(),
+            Some("next-candidate" | "previous-candidate")
+        ) && let Some(active) = &mut self.active_rerank
+        {
+            active.selection_touched = true;
+        }
         if !self.input_state.registrations.is_empty()
             && matches!(self.input_state.phase, Phase::Direct)
         {
@@ -1023,13 +1052,16 @@ fn merge_reranked_candidate(
     cursor: &mut usize,
     candidate: Candidate,
     order: &[CandidateSortKey],
+    preserve_selection: bool,
 ) {
     let selected = candidates
         .get(*cursor)
         .map(|candidate| candidate.output.clone());
     candidates.push(candidate);
     candidates.sort_by(|left, right| compare_candidates(left, right, order));
-    if let Some(selected) = selected
+    if !preserve_selection {
+        *cursor = 0;
+    } else if let Some(selected) = selected
         && let Some(index) = candidates
             .iter()
             .position(|candidate| candidate.output == selected)
@@ -1207,6 +1239,7 @@ mod tests {
             &mut cursor,
             candidate("first", 1.0),
             &[CandidateSortKey::AiScore],
+            true,
         );
 
         assert_eq!(
@@ -1217,6 +1250,33 @@ mod tests {
             ["first", "second", "third"]
         );
         assert_eq!(candidates[cursor].output, "third");
+    }
+
+    #[test]
+    fn asynchronous_rerank_selects_new_best_before_user_interaction() {
+        let candidate = |output: &str, loss| Candidate {
+            input: String::new(),
+            okuri: None,
+            text: output.to_owned(),
+            output: output.to_owned(),
+            annotation: None,
+            source: CandidateSource::System,
+            loss,
+            token_count: 1,
+            recency: None,
+        };
+        let mut candidates = vec![candidate("second", 2.0)];
+        let mut cursor = 0;
+
+        merge_reranked_candidate(
+            &mut candidates,
+            &mut cursor,
+            candidate("first", 1.0),
+            &[CandidateSortKey::AiScore],
+            false,
+        );
+
+        assert_eq!(candidates[cursor].output, "first");
     }
 
     #[test]
