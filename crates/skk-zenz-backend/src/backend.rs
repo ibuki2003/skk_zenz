@@ -400,6 +400,13 @@ impl Backend {
         mut candidates: Vec<Candidate>,
         mut cursor: usize,
     ) -> Result<(bool, Option<String>)> {
+        if should_restore_preedit(command, cursor) {
+            self.input_state.phase = Phase::Preedit {
+                stem: Composition::from_output(input),
+                okuri: okuri.map(Composition::from_output),
+            };
+            return Ok((true, None));
+        }
         match command {
             Some("next-candidate") => {
                 if cursor + 1 < candidates.len() {
@@ -407,21 +414,7 @@ impl Backend {
                 }
             }
             Some("previous-candidate") => {
-                let Some(previous) = previous_candidate(cursor) else {
-                    self.input_state.phase = Phase::Preedit {
-                        stem: Composition::from_output(input),
-                        okuri: okuri.map(Composition::from_output),
-                    };
-                    return Ok((true, None));
-                };
-                cursor = previous;
-            }
-            Some("abort") => {
-                self.input_state.phase = Phase::Preedit {
-                    stem: Composition::from_output(input),
-                    okuri: okuri.map(Composition::from_output),
-                };
-                return Ok((true, None));
+                cursor -= 1;
             }
             Some("purge-candidate") => {
                 if let Some(candidate) = candidates.get(cursor).cloned() {
@@ -551,8 +544,9 @@ fn should_start_okuri(event: &KeyEvent, stem: &Composition) -> bool {
     is_preedit_start(event) && stem.has_output() && !stem.has_pending()
 }
 
-fn previous_candidate(cursor: usize) -> Option<usize> {
-    cursor.checked_sub(1)
+fn should_restore_preedit(command: Option<&str>, cursor: usize) -> bool {
+    matches!(command, Some("abort" | "delete"))
+        || command == Some("previous-candidate") && cursor == 0
 }
 
 fn should_commit_selection_for_event(event: &KeyEvent) -> bool {
@@ -672,8 +666,10 @@ mod tests {
 
     #[test]
     fn first_previous_candidate_returns_to_preedit() {
-        assert_eq!(previous_candidate(0), None);
-        assert_eq!(previous_candidate(2), Some(1));
+        assert!(should_restore_preedit(Some("previous-candidate"), 0));
+        assert!(!should_restore_preedit(Some("previous-candidate"), 2));
+        assert!(should_restore_preedit(Some("delete"), 2));
+        assert!(should_restore_preedit(Some("abort"), 2));
     }
 
     #[test]
