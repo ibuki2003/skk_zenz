@@ -148,7 +148,7 @@ class SkkZenzEngine final : public fcitx::InputMethodEngineV2 {
 public:
     explicit SkkZenzEngine(fcitx::Instance *instance)
         : instance_(instance),
-          backend_(skk_zenz_backend_new("skk-zenz.toml")) {}
+          backend_(skk_zenz_backend_new(nullptr)) {}
 
     ~SkkZenzEngine() override { skk_zenz_backend_free(backend_); }
 

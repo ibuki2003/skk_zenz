@@ -20,8 +20,6 @@ SKKを現代的にしたいな!というモチベでPoCを作ってみます
 
 優先度順:
 
-- 設定ファイルをちゃんと読む
-  libSKK実装のコンフィグも読めるようにする(rom-kanaとか)
 - abbrモード
 - モデルの自動ダウンロード
 - 最適化
@@ -65,12 +63,11 @@ backendのコア機能を確認する最低限のcli
 
 ## 設定ファイル
 
-toml形式です。現在はcwdのものを読みます
+`$XDG_CONFIG_HOME/skk-zenz/config.toml`
+（通常は`~/.config/skk-zenz/config.toml`）を読みます。
 
 ```toml
 model_path = "models/zenz-v3.2-xsmall-Q5_K_M.gguf"
-system_dictionaries = ["data/SKK-JISYO.L"]
-user_dictionary = "data/user.sqlite3"
 rom_kana_rule = "azik_mod"
 
 context_size = 1024
@@ -78,14 +75,13 @@ context_size = 1024
 gpu_layers = 999
 ```
 
-rom-kana ruleは、libskkと同様に`$LIBSKK_DATA_PATH/*/rules`、または
-`$XDG_CONFIG_HOME/libskk/rules`（通常は`~/.config/libskk/rules`）などから探します。
-探索先を限定する場合は`rule_search_paths`を指定できます。
+ユーザ辞書は同じディレクトリの`user.sqlite3`
+system辞書は`~/.config/skk-zenz/dictionary_list`へ1行1ファイルで指定 相対パスも使えます
 
-```toml
-rule_search_paths = ["/path/to/libskk/rules"]
-```
+このファイルがない場合は `$XDG_DATA_HOME/fcitx5/skk/dictionary_list`を代わりに使用します
 
+rom-kana ruleは、`~/.config/skk-zenz/rules`のほか、`~/.config/libskk/rules`とコンパイル時の`LIBSKK_DATA_PATH`も探索対象とします
+(コンパイル時に`LIBSKK_DATA_PATH`がなければ`/usr/share/libskk/rules`を使用します)
 
 ## build
 
@@ -106,4 +102,3 @@ direnv allow
 
 backendを初期化できない場合や入力処理に失敗した場合は標準エラーへ原因を記録し、
 キー入力はアプリケーションへそのまま渡します。
-

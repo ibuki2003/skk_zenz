@@ -116,10 +116,15 @@ fn dispatch(
 /// `config_path` must point to a valid NUL-terminated string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn skk_zenz_backend_new(config_path: *const c_char) -> *mut Backend {
-    let Some(config_path) = (unsafe { required_str(config_path) }) else {
-        return ptr::null_mut();
+    let config = if config_path.is_null() {
+        BackendConfig::from_xdg()
+    } else {
+        let Some(config_path) = (unsafe { required_str(config_path) }) else {
+            return ptr::null_mut();
+        };
+        BackendConfig::from_toml_file(Path::new(config_path))
     };
-    match BackendConfig::from_toml_file(Path::new(config_path)).and_then(Backend::load) {
+    match config.and_then(Backend::load) {
         Ok(backend) => Box::into_raw(Box::new(backend)),
         Err(error) => {
             eprintln!("skk-zenz: backend initialization failed: {error:#}");

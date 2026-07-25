@@ -259,25 +259,6 @@ impl KanaMode {
     }
 }
 
-pub fn default_rule_search_paths() -> Vec<PathBuf> {
-    if let Some(paths) = std::env::var_os("LIBSKK_DATA_PATH") {
-        return std::env::split_paths(&paths)
-            .map(|path| path.join("rules"))
-            .collect();
-    }
-    let config_home = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
-    config_home
-        .into_iter()
-        .map(|path| path.join("libskk/rules"))
-        .chain([
-            PathBuf::from("/usr/local/share/libskk/rules"),
-            PathBuf::from("/usr/share/libskk/rules"),
-        ])
-        .collect()
-}
-
 fn hiragana_to_katakana(value: &str) -> String {
     value
         .chars()

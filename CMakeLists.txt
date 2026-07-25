@@ -30,6 +30,7 @@ add_custom_command(
         "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.lock"
         "${CMAKE_CURRENT_SOURCE_DIR}/crates/fcitx5-addon/Cargo.toml"
         "${CMAKE_CURRENT_SOURCE_DIR}/crates/skk-zenz-backend/Cargo.toml"
+        "${CMAKE_CURRENT_SOURCE_DIR}/crates/skk-zenz-backend/build.rs"
         ${RUST_SOURCES}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Building the Rust core"

@@ -13,8 +13,8 @@ use skk_zenz_backend::{
 #[command(about = "skk-zenz backendのコア機能を操作列で試す")]
 struct Args {
     /// backend設定ファイル
-    #[arg(long, default_value = "skk-zenz.toml")]
-    config: PathBuf,
+    #[arg(long)]
+    config: Option<PathBuf>,
 
     /// 操作スクリプト。省略時は標準入力から読む
     #[arg(long)]
@@ -38,7 +38,10 @@ enum CliKanaMode {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let config = BackendConfig::from_toml_file(args.config)?;
+    let config = match args.config {
+        Some(path) => BackendConfig::from_toml_file(path)?,
+        None => BackendConfig::from_xdg()?,
+    };
     if let Some(romaji) = args.romaji {
         let rule = RomKanaRule::load(&config.rom_kana_rule, &config.rule_search_paths)?;
         let conversion = rule.convert(&romaji, args.kana_mode.into());
