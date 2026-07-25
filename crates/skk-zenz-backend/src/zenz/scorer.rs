@@ -34,6 +34,7 @@ self_cell!(
 pub struct ZenzConfig {
     pub model_path: PathBuf,
     pub context_size: u32,
+    pub parallel_sequences: u32,
     pub threads: Option<i32>,
     pub gpu_layers: u32,
 }
@@ -43,6 +44,7 @@ impl ZenzConfig {
         Self {
             model_path: model_path.into(),
             context_size: 1024,
+            parallel_sequences: 1,
             threads: None,
             gpu_layers: 999,
         }
@@ -60,6 +62,7 @@ pub struct Score {
 pub struct ZenzScorer {
     model_and_context: ModelAndContext,
     cached_tokens: Vec<LlamaToken>,
+    parallel_sequences: u32,
     // model/contextより後にdropさせるため、フィールド順を末尾にする。
     #[allow(dead_code)]
     backend: LlamaBackend,
@@ -79,9 +82,14 @@ impl ZenzScorer {
             config.model_path.display(),
             load_started.elapsed().as_secs_f64()
         );
-        let mut context_params = LlamaContextParams::default().with_n_ctx(Some(
-            NonZeroU32::new(config.context_size).context("context_sizeは1以上必要です")?,
-        ));
+        let mut context_params = LlamaContextParams::default()
+            .with_n_ctx(Some(
+                NonZeroU32::new(config.context_size).context("context_sizeは1以上必要です")?,
+            ))
+            .with_n_seq_max(config.parallel_sequences);
+        if config.parallel_sequences == 0 {
+            bail!("parallel_sequencesは1以上必要です");
+        }
         if let Some(threads) = config.threads {
             context_params = context_params
                 .with_n_threads(threads)
@@ -95,6 +103,7 @@ impl ZenzScorer {
         Ok(Self {
             model_and_context,
             cached_tokens: Vec::new(),
+            parallel_sequences: config.parallel_sequences,
             backend,
         })
     }
@@ -138,7 +147,9 @@ impl ZenzScorer {
                     .context("output tagのtoken化に失敗しました")?;
                 let output_offset = evaluation_tokens.len();
                 evaluation_tokens.extend_from_slice(&output_tokens);
-                if cached_len + evaluation_tokens.len() > llama_context.n_ctx() as usize {
+                let sequence_context_size =
+                    llama_context.n_ctx() as usize / self.parallel_sequences as usize;
+                if cached_len + evaluation_tokens.len() > sequence_context_size {
                     bail!("評価token列がcontext sizeを超えます");
                 }
 
@@ -164,6 +175,103 @@ impl ZenzScorer {
                     reused_tokens: prepared.reused_tokens,
                     decoded_tokens: prepared.decoded_tokens + evaluation_tokens.len(),
                 })
+            })
+    }
+
+    pub fn score_batch(
+        &mut self,
+        context: &str,
+        input: &str,
+        outputs: &[&str],
+    ) -> Result<Vec<Score>> {
+        if outputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        if outputs.len() + 1 > self.parallel_sequences as usize {
+            bail!(
+                "batch候補数{}に対してparallel_sequences={}が不足しています",
+                outputs.len(),
+                self.parallel_sequences
+            );
+        }
+        let prepared = self.prepare(context, input)?;
+        let cached_len = self.cached_tokens.len();
+        self.model_and_context
+            .with_dependent_mut(|model, llama_context| {
+                let output_tag = model
+                    .str_to_token(&OUTPUT_TAG.to_string(), AddBos::Never)
+                    .context("output tagのtoken化に失敗しました")?;
+                let mut sequences = Vec::with_capacity(outputs.len());
+                let mut batch_size = 0;
+                for output in outputs {
+                    let output_tokens = model
+                        .str_to_token(output, AddBos::Never)
+                        .with_context(|| format!("outputのtoken化に失敗しました: {output}"))?;
+                    if output_tokens.is_empty() {
+                        bail!("空のoutputは評価できません");
+                    }
+                    let mut evaluation_tokens = output_tag.clone();
+                    let output_offset = evaluation_tokens.len();
+                    evaluation_tokens.extend_from_slice(&output_tokens);
+                    batch_size += evaluation_tokens.len();
+                    sequences.push((output_tokens, evaluation_tokens, output_offset));
+                }
+                let sequence_context_size =
+                    llama_context.n_ctx() as usize / self.parallel_sequences as usize;
+                if sequences
+                    .iter()
+                    .any(|(_, tokens, _)| cached_len + tokens.len() > sequence_context_size)
+                {
+                    bail!("batch評価token列がsequenceあたりのcontext sizeを超えます");
+                }
+
+                let mut batch = LlamaBatch::new(batch_size, 1);
+                let mut logits_indices = Vec::with_capacity(sequences.len());
+                for (sequence_index, (_, evaluation_tokens, output_offset)) in
+                    sequences.iter().enumerate()
+                {
+                    let sequence_id = i32::try_from(sequence_index + 1)
+                        .context("候補数がsequence IDの上限を超えました")?;
+                    llama_context.copy_kv_cache_seq(0, sequence_id, None, None)?;
+                    let mut indices =
+                        Vec::with_capacity(evaluation_tokens.len().saturating_sub(*output_offset));
+                    for (offset, token) in evaluation_tokens.iter().copied().enumerate() {
+                        let needs_logits =
+                            offset + 1 >= *output_offset && offset < evaluation_tokens.len() - 1;
+                        let batch_index = batch.n_tokens();
+                        batch.add(
+                            token,
+                            (cached_len + offset) as i32,
+                            &[sequence_id],
+                            needs_logits,
+                        )?;
+                        if needs_logits {
+                            indices.push(batch_index);
+                        }
+                    }
+                    logits_indices.push(indices);
+                }
+                llama_context
+                    .decode(&mut batch)
+                    .context("候補batchのdecodeに失敗しました")?;
+
+                let mut scores = Vec::with_capacity(sequences.len());
+                for (sequence_index, ((output_tokens, evaluation_tokens, _), indices)) in
+                    sequences.iter().zip(&logits_indices).enumerate()
+                {
+                    let mut loss = 0.0;
+                    for (token, index) in output_tokens.iter().zip(indices) {
+                        loss += token_loss(llama_context.get_logits_ith(*index), *token);
+                    }
+                    scores.push(Score {
+                        loss,
+                        token_count: output_tokens.len(),
+                        reused_tokens: prepared.reused_tokens,
+                        decoded_tokens: prepared.decoded_tokens + evaluation_tokens.len(),
+                    });
+                    llama_context.kv_cache_seq_rm((sequence_index + 1) as i32, None, None)?;
+                }
+                Ok(scores)
             })
     }
 }

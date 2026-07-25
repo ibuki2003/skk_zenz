@@ -83,6 +83,14 @@ struct RunResult {
     elapsed: Duration,
 }
 
+#[derive(Debug)]
+struct EvalGroup {
+    line: usize,
+    context: String,
+    input: String,
+    outputs: Vec<String>,
+}
+
 #[derive(Debug, Parser)]
 #[command(about = "zenz v3.2 の baseline/speculative スコアリングを操作列で比較する")]
 struct Args {
@@ -102,9 +110,13 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     runs: usize,
 
-    /// llama.cpp の推論スレッド数
-    #[arg(long)]
-    threads: Option<i32>,
+    /// 比較する llama.cpp の推論スレッド数（カンマ区切り、省略時は自動）
+    #[arg(long, value_delimiter = ',')]
+    threads: Vec<i32>,
+
+    /// 比較するcontext size（カンマ区切り）
+    #[arg(long, value_delimiter = ',', default_value = "1024")]
+    context_sizes: Vec<u32>,
 
     /// GPU へ offload するレイヤー数（cuda/vulkan feature 時のみ有効）
     #[arg(long, default_value_t = 999)]
@@ -115,6 +127,12 @@ fn main() -> Result<()> {
     let args = Args::parse();
     if args.runs == 0 {
         bail!("--runs は1以上にしてください");
+    }
+    if args.context_sizes.contains(&0) {
+        bail!("--context-sizes は1以上にしてください");
+    }
+    if args.threads.iter().any(|threads| *threads <= 0) {
+        bail!("--threads は1以上にしてください");
     }
     let operations = load_script(args.script.as_deref())?;
 
@@ -201,12 +219,45 @@ fn benchmark_model(args: &Args, operations: &[Operation], label: &str, path: &Pa
     println!("\n== zenz-v3.2-{label} ==");
     println!("model: {}", path.display());
 
+    let thread_counts: Vec<Option<i32>> = if args.threads.is_empty() {
+        vec![None]
+    } else {
+        args.threads.iter().copied().map(Some).collect()
+    };
+    for context_size in &args.context_sizes {
+        for threads in &thread_counts {
+            benchmark_configuration(args, operations, path, *context_size, *threads)?;
+        }
+    }
+    Ok(())
+}
+
+fn benchmark_configuration(
+    args: &Args,
+    operations: &[Operation],
+    path: &Path,
+    context_size: u32,
+    threads: Option<i32>,
+) -> Result<()> {
+    println!(
+        "\n## context_size={context_size} threads={}",
+        threads.map_or_else(|| "auto".to_owned(), |value| value.to_string())
+    );
     let mut config = ZenzConfig::new(path);
-    config.threads = args.threads;
+    config.context_size = context_size;
+    config.parallel_sequences = eval_groups(operations)
+        .iter()
+        .map(|group| group.outputs.len() as u32 + 1)
+        .max()
+        .unwrap_or(1);
+    config.threads = threads;
     config.gpu_layers = args.gpu_layers;
     let load_started = Instant::now();
     let mut scorer = ZenzScorer::load(&config)?;
-    println!("load: {:.2} ms", milliseconds(load_started.elapsed()));
+    let rss = resident_memory_mib()
+        .map(|mib| format!(" rss={mib:.1} MiB"))
+        .unwrap_or_default();
+    println!("load: {:.2} ms{rss}", milliseconds(load_started.elapsed()));
 
     for mode in Mode::ALL {
         let _ = run_script(&mut scorer, operations, mode)?;
@@ -216,6 +267,7 @@ fn benchmark_model(args: &Args, operations: &[Operation], label: &str, path: &Pa
         }
         print_statistics(mode, operations, &runs);
     }
+    benchmark_candidate_batches(&mut scorer, operations, args.runs)?;
     Ok(())
 }
 
@@ -283,6 +335,110 @@ fn score_output(scorer: &mut ZenzScorer, state: &ScriptState, output: &str) -> R
     })
 }
 
+fn benchmark_candidate_batches(
+    scorer: &mut ZenzScorer,
+    operations: &[Operation],
+    runs: usize,
+) -> Result<()> {
+    let groups = eval_groups(operations);
+    println!("\n-- candidate sequential/batch --");
+    for group in groups {
+        let sequential_warmup = evaluate_sequential(scorer, &group)?;
+        let batch_warmup = evaluate_batch(scorer, &group)?;
+        let max_loss_delta = sequential_warmup
+            .iter()
+            .zip(&batch_warmup)
+            .map(|(left, right)| (left.loss - right.loss).abs())
+            .fold(0.0, f64::max);
+
+        let mut sequential_samples = Vec::with_capacity(runs);
+        let mut batch_samples = Vec::with_capacity(runs);
+        for _ in 0..runs {
+            let started = Instant::now();
+            evaluate_sequential(scorer, &group)?;
+            sequential_samples.push(milliseconds(started.elapsed()));
+
+            let started = Instant::now();
+            evaluate_batch(scorer, &group)?;
+            batch_samples.push(milliseconds(started.elapsed()));
+        }
+        let sequential_mean = mean(&sequential_samples);
+        let batch_mean = mean(&batch_samples);
+        println!(
+            "line {:>2} candidates={} sequential={:>7.2} ms batch={:>7.2} ms speedup={:>5.2}x loss_delta={:.2e}",
+            group.line,
+            group.outputs.len(),
+            sequential_mean,
+            batch_mean,
+            sequential_mean / batch_mean,
+            max_loss_delta,
+        );
+    }
+    Ok(())
+}
+
+fn evaluate_sequential(
+    scorer: &mut ZenzScorer,
+    group: &EvalGroup,
+) -> Result<Vec<skk_zenz_backend::zenz::Score>> {
+    scorer.clear();
+    scorer.prepare(&group.context, &group.input)?;
+    group
+        .outputs
+        .iter()
+        .map(|output| scorer.score(&group.context, &group.input, output))
+        .collect()
+}
+
+fn evaluate_batch(
+    scorer: &mut ZenzScorer,
+    group: &EvalGroup,
+) -> Result<Vec<skk_zenz_backend::zenz::Score>> {
+    scorer.clear();
+    scorer.prepare(&group.context, &group.input)?;
+    let outputs: Vec<_> = group.outputs.iter().map(String::as_str).collect();
+    scorer.score_batch(&group.context, &group.input, &outputs)
+}
+
+fn eval_groups(operations: &[Operation]) -> Vec<EvalGroup> {
+    let mut groups = Vec::new();
+    let mut context = String::new();
+    let mut input = String::new();
+    let mut index = 0;
+    while index < operations.len() {
+        match &operations[index].command {
+            Command::Context(value) => {
+                context.clone_from(value);
+                input.clear();
+                index += 1;
+            }
+            Command::Input(value) => {
+                input.clone_from(value);
+                index += 1;
+            }
+            Command::Eval(_) => {
+                let line = operations[index].line;
+                let mut outputs = Vec::new();
+                while let Some(Operation {
+                    command: Command::Eval(output),
+                    ..
+                }) = operations.get(index)
+                {
+                    outputs.push(output.clone());
+                    index += 1;
+                }
+                groups.push(EvalGroup {
+                    line,
+                    context: context.clone(),
+                    input: input.clone(),
+                    outputs,
+                });
+            }
+        }
+    }
+    groups
+}
+
 fn print_statistics(mode: Mode, operations: &[Operation], runs: &[RunResult]) {
     println!("\n-- {} --", mode.name());
     for (index, operation) in operations.iter().enumerate() {
@@ -348,6 +504,13 @@ fn milliseconds(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
 }
 
+fn resident_memory_mib() -> Option<f64> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+    let kib = line.split_whitespace().nth(1)?.parse::<f64>().ok()?;
+    Some(kib / 1024.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,5 +537,32 @@ mod tests {
             UnicodeWidthStr::width(pad_right("input かな", 12).as_str()),
             12
         );
+    }
+
+    #[test]
+    fn parses_comparison_axes() {
+        let args = Args::try_parse_from([
+            "skk-zenz-bench",
+            "--threads",
+            "1,2,4",
+            "--context-sizes",
+            "256,512",
+        ])
+        .unwrap();
+        assert_eq!(args.threads, [1, 2, 4]);
+        assert_eq!(args.context_sizes, [256, 512]);
+    }
+
+    #[test]
+    fn groups_consecutive_candidates_for_batch_evaluation() {
+        let operations =
+            parse_script("context 前文\ninput かな\neval 仮名\neval 加奈\ninput つぎ\neval 次")
+                .unwrap();
+        let groups = eval_groups(&operations);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].context, "前文");
+        assert_eq!(groups[0].input, "かな");
+        assert_eq!(groups[0].outputs, ["仮名", "加奈"]);
+        assert_eq!(groups[1].outputs, ["次"]);
     }
 }
