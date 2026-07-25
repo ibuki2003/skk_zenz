@@ -324,7 +324,7 @@ impl Backend {
             }
             _ => {}
         }
-        let Some(text) = event.text.as_deref() else {
+        let Some(text) = input_text(&event, command) else {
             return Ok((false, None));
         };
         if matches!(
@@ -339,7 +339,7 @@ impl Backend {
             self.input_state.context.push_str(&output);
             return Ok((true, Some(output)));
         }
-        if is_preedit_start(&event) {
+        if is_upper_input(&event, command) {
             let mut stem = Composition::default();
             stem.push(
                 &self.rom_kana_rule,
@@ -420,11 +420,11 @@ impl Backend {
             }
             _ => {}
         }
-        let Some(text) = event.text.as_deref() else {
+        let Some(text) = input_text(&event, command) else {
             self.input_state.phase = Phase::Preedit { stem, okuri };
             return Ok((false, None));
         };
-        if okuri.is_none() && should_start_okuri(&event, &stem) {
+        if okuri.is_none() && should_start_okuri(&event, command, &stem) {
             let mut value = Composition::default();
             value.push(
                 &self.rom_kana_rule,
@@ -437,7 +437,7 @@ impl Backend {
                 return self.start_lookup(stem, okuri);
             }
         } else if let Some(okuri) = &mut okuri {
-            let text = if is_preedit_start(&event) {
+            let text = if is_upper_input(&event, command) {
                 text.to_ascii_lowercase()
             } else {
                 text.to_owned()
@@ -447,7 +447,7 @@ impl Backend {
                 return self.start_lookup(stem, Some(okuri.clone()));
             }
         } else {
-            let text = if is_preedit_start(&event) {
+            let text = if is_upper_input(&event, command) {
                 text.to_ascii_lowercase()
             } else {
                 text.to_owned()
@@ -503,11 +503,11 @@ impl Backend {
             }
             _ => {}
         }
-        let Some(text) = event.text else {
+        let Some(text) = input_text(&event, command) else {
             self.input_state.phase = Phase::Abbrev { input };
             return Ok((false, None));
         };
-        input.push_str(&text);
+        input.push_str(text);
         self.input_state.phase = Phase::Abbrev { input };
         Ok((true, None))
     }
@@ -557,7 +557,20 @@ impl Backend {
                     return Ok((command == Some("commit"), Some(candidate.output)));
                 }
             }
-            None if should_commit_selection_for_event(&event) => {
+            Some(command) if upper_command_text(Some(command)).is_some() => {
+                if let Some(candidate) = candidates.get(cursor).cloned() {
+                    self.select(&candidate)?;
+                    self.input_state.context.push_str(&candidate.output);
+                    self.input_state.phase = Phase::Direct;
+                    let (_, following_commit) = self.handle_direct(event, Some(command))?;
+                    let mut commit = candidate.output;
+                    if let Some(following_commit) = following_commit {
+                        commit.push_str(&following_commit);
+                    }
+                    return Ok((true, Some(commit)));
+                }
+            }
+            None if should_commit_selection_for_event(&event, None) => {
                 if let Some(candidate) = candidates.get(cursor).cloned() {
                     self.select(&candidate)?;
                     self.input_state.context.push_str(&candidate.output);
@@ -670,8 +683,22 @@ fn is_preedit_start(event: &KeyEvent) -> bool {
             .is_some_and(|text| text.len() == 1 && text.as_bytes()[0].is_ascii_uppercase())
 }
 
-fn should_start_okuri(event: &KeyEvent, stem: &Composition) -> bool {
-    is_preedit_start(event) && stem.has_output() && !stem.has_pending()
+fn upper_command_text(command: Option<&str>) -> Option<&str> {
+    command
+        .and_then(|command| command.strip_prefix("upper-"))
+        .filter(|text| !text.is_empty())
+}
+
+fn input_text<'a>(event: &'a KeyEvent, command: Option<&'a str>) -> Option<&'a str> {
+    upper_command_text(command).or(event.text.as_deref())
+}
+
+fn is_upper_input(event: &KeyEvent, command: Option<&str>) -> bool {
+    upper_command_text(command).is_some() || is_preedit_start(event)
+}
+
+fn should_start_okuri(event: &KeyEvent, command: Option<&str>, stem: &Composition) -> bool {
+    is_upper_input(event, command) && stem.has_output() && !stem.has_pending()
 }
 
 fn should_restore_preedit(command: Option<&str>, cursor: usize) -> bool {
@@ -679,8 +706,8 @@ fn should_restore_preedit(command: Option<&str>, cursor: usize) -> bool {
         || command == Some("previous-candidate") && cursor == 0
 }
 
-fn should_commit_selection_for_event(event: &KeyEvent) -> bool {
-    event.text.is_some()
+fn should_commit_selection_for_event(event: &KeyEvent, command: Option<&str>) -> bool {
+    input_text(event, command).is_some()
 }
 
 fn supports_abbrev(mode: InputMode) -> bool {
@@ -791,15 +818,26 @@ mod tests {
         let event = KeyEvent::character("A", 'a', Modifiers::SHIFT);
         let mut stem = Composition::default();
         stem.push(&rule, "k", KanaMode::Hiragana);
-        assert!(!should_start_okuri(&event, &stem));
+        assert!(!should_start_okuri(&event, None, &stem));
 
         stem.push(&rule, "a", KanaMode::Hiragana);
         assert_eq!(stem.display(), "か");
-        assert!(should_start_okuri(&event, &stem));
+        assert!(should_start_okuri(&event, None, &stem));
 
         stem.push(&rule, "k", KanaMode::Hiragana);
         assert_eq!(stem.display(), "かk");
-        assert!(!should_start_okuri(&event, &stem));
+        assert!(!should_start_okuri(&event, None, &stem));
+    }
+
+    #[test]
+    fn upper_command_uses_lower_text_and_upper_semantics() {
+        let event = KeyEvent::character(":", ':', Modifiers::SHIFT);
+        assert_eq!(input_text(&event, Some("upper-;")), Some(";"));
+        assert!(is_upper_input(&event, Some("upper-;")));
+
+        let mut stem = Composition::default();
+        stem.push(&rule(), "ka", KanaMode::Hiragana);
+        assert!(should_start_okuri(&event, Some("upper-;"), &stem));
     }
 
     #[test]
@@ -812,15 +850,18 @@ mod tests {
 
     #[test]
     fn printable_key_commits_selection_but_modifier_does_not() {
-        assert!(should_commit_selection_for_event(&KeyEvent::character(
-            "n",
-            'n',
-            Modifiers::empty()
-        )));
-        assert!(!should_commit_selection_for_event(&KeyEvent::named(
-            "Shift_L",
-            Modifiers::SHIFT
-        )));
+        assert!(should_commit_selection_for_event(
+            &KeyEvent::character("n", 'n', Modifiers::empty()),
+            None
+        ));
+        assert!(!should_commit_selection_for_event(
+            &KeyEvent::named("Shift_L", Modifiers::SHIFT),
+            None
+        ));
+        assert!(should_commit_selection_for_event(
+            &KeyEvent::character(":", ':', Modifiers::SHIFT),
+            Some("upper-;")
+        ));
     }
 
     #[test]
