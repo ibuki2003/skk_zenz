@@ -1,8 +1,10 @@
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -148,15 +150,24 @@ class SkkZenzEngine final : public fcitx::InputMethodEngineV2 {
 public:
     explicit SkkZenzEngine(fcitx::Instance *instance)
         : instance_(instance),
-          backend_(skk_zenz_backend_new(nullptr)) {}
+          initializationThread_([this]() {
+              backend_.store(
+                  skk_zenz_backend_new(nullptr),
+                  std::memory_order_release);
+          }) {}
 
-    ~SkkZenzEngine() override { skk_zenz_backend_free(backend_); }
+    ~SkkZenzEngine() override {
+        initializationThread_.join();
+        skk_zenz_backend_free(
+            backend_.load(std::memory_order_acquire));
+    }
 
     void keyEvent(
         const fcitx::InputMethodEntry &entry,
         fcitx::KeyEvent &event) override {
         FCITX_UNUSED(entry);
-        if (!backend_ || event.isRelease()) {
+        auto *backend = backend_.load(std::memory_order_acquire);
+        if (!backend || event.isRelease()) {
             return;
         }
 
@@ -179,11 +190,11 @@ public:
         const auto keyName = logicalKeyName(event.key());
         UpdateTarget target{this, event.inputContext(), &event};
         skk_zenz_backend_key(
-            backend_, text.empty() ? nullptr : text.c_str(), keyName.c_str(),
+            backend, text.empty() ? nullptr : text.c_str(), keyName.c_str(),
             backendModifiers(rawKey.states()), &target, updateCallback);
         if (!event.accepted() && text.empty() && !rawKey.isModifier()) {
             skk_zenz_backend_set_context(
-                backend_, "", nullptr, discardUpdate);
+                backend, "", nullptr, discardUpdate);
         }
     }
 
@@ -199,11 +210,12 @@ public:
         const fcitx::InputMethodEntry &entry,
         fcitx::InputContextEvent &event) override {
         FCITX_UNUSED(entry);
-        if (!backend_) {
+        auto *backend = backend_.load(std::memory_order_acquire);
+        if (!backend) {
             return;
         }
         UpdateTarget target{this, event.inputContext(), nullptr};
-        skk_zenz_backend_reset(backend_, &target, updateCallback);
+        skk_zenz_backend_reset(backend, &target, updateCallback);
     }
 
     void applyUpdate(
@@ -283,6 +295,10 @@ private:
     }
 
     void synchronizeContext(fcitx::InputContext *inputContext) {
+        auto *backend = backend_.load(std::memory_order_acquire);
+        if (!backend) {
+            return;
+        }
         const auto &surrounding = inputContext->surroundingText();
         if (!surrounding.isValid()) {
             return;
@@ -300,22 +316,27 @@ private:
         }
         const std::string left(text.begin(), iterator);
         skk_zenz_backend_set_context(
-            backend_, left.c_str(), nullptr, discardUpdate);
+            backend, left.c_str(), nullptr, discardUpdate);
     }
 
     void focusOut(fcitx::InputContext *inputContext) {
-        if (!backend_) {
+        auto *backend = backend_.load(std::memory_order_acquire);
+        if (!backend) {
             return;
         }
         UpdateTarget target{this, inputContext, nullptr};
-        skk_zenz_backend_focus_out(backend_, &target, updateCallback);
+        skk_zenz_backend_focus_out(backend, &target, updateCallback);
     }
 
     void selectCandidate(
         fcitx::InputContext *inputContext, std::size_t index) {
+        auto *backend = backend_.load(std::memory_order_acquire);
+        if (!backend) {
+            return;
+        }
         UpdateTarget target{this, inputContext, nullptr};
         skk_zenz_backend_select_candidate(
-            backend_, index, &target, updateCallback);
+            backend, index, &target, updateCallback);
     }
 
     void showModeIndicator(
@@ -351,7 +372,8 @@ private:
     }
 
     fcitx::Instance *instance_;
-    SkkZenzBackend *backend_;
+    std::atomic<SkkZenzBackend *> backend_{nullptr};
+    std::thread initializationThread_;
     std::size_t candidateCount_ = 0;
     std::size_t candidatePageOffset_ = 0;
     std::uint8_t lastInputMode_ = 0;
