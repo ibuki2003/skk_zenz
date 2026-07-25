@@ -2,6 +2,8 @@ use std::ffi::{CStr, CString, c_char};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::pin::{Pin, pin};
+use std::sync::Once;
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use llama_cpp_2::context::LlamaContext;
@@ -12,6 +14,7 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::params::kv_overrides::ParamOverrideValue;
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::token::LlamaToken;
+use llama_cpp_2::{LogOptions, send_logs_to_tracing};
 use self_cell::self_cell;
 
 use super::prompt::{OUTPUT_TAG, prompt_tokens};
@@ -64,8 +67,18 @@ pub struct ZenzScorer {
 
 impl ZenzScorer {
     pub fn load(config: &ZenzConfig) -> Result<Self> {
+        static LLAMA_LOG_INIT: Once = Once::new();
+        LLAMA_LOG_INIT.call_once(|| {
+            send_logs_to_tracing(LogOptions::default().with_logs_enabled(false));
+        });
         let backend = LlamaBackend::init().context("llama.cpp backendの初期化に失敗しました")?;
+        let load_started = Instant::now();
         let model = load_model(&backend, &config.model_path, config.gpu_layers)?;
+        eprintln!(
+            "model loaded from {}, took {:.2} sec.",
+            config.model_path.display(),
+            load_started.elapsed().as_secs_f64()
+        );
         let mut context_params = LlamaContextParams::default().with_n_ctx(Some(
             NonZeroU32::new(config.context_size).context("context_sizeは1以上必要です")?,
         ));

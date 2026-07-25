@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use hf_hub::api::sync::ApiBuilder;
-use llama_cpp_2::{LogOptions, send_logs_to_tracing};
 use skk_zenz_backend::zenz::{ZenzConfig, ZenzScorer};
 use unicode_width::UnicodeWidthStr;
 
@@ -119,7 +118,6 @@ fn main() -> Result<()> {
     }
     let operations = load_script(args.script.as_deref())?;
 
-    send_logs_to_tracing(LogOptions::default().with_logs_enabled(false));
     for (label, path) in resolve_models(&args)? {
         benchmark_model(&args, &operations, label, &path)?;
     }
