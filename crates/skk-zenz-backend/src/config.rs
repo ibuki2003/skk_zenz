@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use hf_hub::api::sync::ApiBuilder;
 use serde::Deserialize;
 
 use crate::zenz::ZenzConfig;
@@ -22,7 +23,8 @@ pub struct BackendConfig {
 
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
-    model_path: PathBuf,
+    model_path: Option<PathBuf>,
+    huggingface: Option<String>,
     #[serde(default = "default_rom_kana_rule")]
     rom_kana_rule: String,
     #[serde(default = "default_context_size")]
@@ -49,7 +51,15 @@ impl BackendConfig {
             .with_context(|| format!("設定ファイルを解釈できません: {}", path.display()))?;
         let base = path.parent().unwrap_or_else(|| Path::new(""));
         let config_dir = config_dir()?;
-        let mut zenz = ZenzConfig::new(resolve_path(base, file.model_path));
+        let model_path = match file.model_path {
+            Some(path) => resolve_path(base, path),
+            None => download_huggingface_model(
+                file.huggingface
+                    .as_deref()
+                    .context("model_path または huggingface を指定してください")?,
+            )?,
+        };
+        let mut zenz = ZenzConfig::new(model_path);
         zenz.context_size = file.context_size;
         zenz.threads = file.threads;
         zenz.gpu_layers = file.gpu_layers;
@@ -61,6 +71,28 @@ impl BackendConfig {
             rule_search_paths: rule_search_paths(&config_dir)?,
         })
     }
+}
+
+fn download_huggingface_model(reference: &str) -> Result<PathBuf> {
+    let (repo, filename) = parse_huggingface_reference(reference)?;
+    let api = ApiBuilder::new()
+        .with_progress(true)
+        .build()
+        .context("Hugging Face API の初期化に失敗しました")?;
+    api.model(repo.clone())
+        .get(filename)
+        .with_context(|| format!("{repo}/{filename} の取得に失敗しました"))
+}
+
+fn parse_huggingface_reference(reference: &str) -> Result<(String, &str)> {
+    let mut fields = reference.splitn(3, '/');
+    let owner = fields.next().unwrap_or_default();
+    let repository = fields.next().unwrap_or_default();
+    let filename = fields.next().unwrap_or_default();
+    if owner.is_empty() || repository.is_empty() || filename.is_empty() {
+        anyhow::bail!("huggingface は owner/repository/path 形式で指定してください: {reference}");
+    }
+    Ok((format!("{owner}/{repository}"), filename))
 }
 
 fn config_dir() -> Result<PathBuf> {
@@ -182,9 +214,33 @@ mod tests {
             "#,
         )
         .unwrap();
+        assert_eq!(file.model_path, Some(PathBuf::from("models/model.gguf")));
+        assert_eq!(file.huggingface, None);
         assert_eq!(file.context_size, 1024);
         assert_eq!(file.gpu_layers, 999);
         assert_eq!(file.rom_kana_rule, "default");
+    }
+
+    #[test]
+    fn parses_huggingface_reference() {
+        assert_eq!(
+            parse_huggingface_reference("Miwa-Keita/zenz-v3.2-small-gguf/ggml-model-Q5_K_M.gguf")
+                .unwrap(),
+            (
+                "Miwa-Keita/zenz-v3.2-small-gguf".to_owned(),
+                "ggml-model-Q5_K_M.gguf"
+            )
+        );
+        assert_eq!(
+            parse_huggingface_reference("owner/repository/models/model.gguf").unwrap(),
+            ("owner/repository".to_owned(), "models/model.gguf")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_huggingface_reference() {
+        assert!(parse_huggingface_reference("repository/model.gguf").is_err());
+        assert!(parse_huggingface_reference("owner/repository/").is_err());
     }
 
     #[test]

@@ -21,7 +21,6 @@ SKKを現代的にしたいな!というモチベでPoCを作ってみます
 優先度順:
 
 - abbrモード
-- モデルの自動ダウンロード
 - 最適化
 - nixでビルドしてhome-managerから呼べるようにする
 - `complete()`による見出し補完
@@ -67,7 +66,9 @@ backendのコア機能を確認する最低限のcli
 （通常は`~/.config/skk-zenz/config.toml`）を読みます。
 
 ```toml
-model_path = "models/zenz-v3.2-xsmall-Q5_K_M.gguf"
+huggingface = "Miwa-Keita/zenz-v3.2-small-gguf/ggml-model-Q5_K_M.gguf"
+#model_path = "models/zenz-v3.2-xsmall-Q5_K_M.gguf"
+
 rom_kana_rule = "azik_mod"
 
 context_size = 1024

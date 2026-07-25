@@ -1111,6 +1111,7 @@ dependencies = [
  "bitflags",
  "clap",
  "encoding_rs",
+ "hf-hub",
  "llama-cpp-2",
  "rusqlite",
  "self_cell",
