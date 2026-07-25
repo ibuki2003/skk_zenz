@@ -1114,6 +1114,7 @@ dependencies = [
  "rusqlite",
  "self_cell",
  "serde",
+ "serde_json",
  "toml",
 ]
 

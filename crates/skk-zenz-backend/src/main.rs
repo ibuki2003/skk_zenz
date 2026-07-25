@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
-use skk_zenz_backend::{Backend, BackendConfig, Candidate};
+use clap::{Parser, ValueEnum};
+use skk_zenz_backend::{Backend, BackendConfig, Candidate, KanaMode, RomKanaRule};
 
 #[derive(Debug, Parser)]
 #[command(about = "skk-zenz backendのコア機能を操作列で試す")]
@@ -17,11 +17,35 @@ struct Args {
     /// 操作スクリプト。省略時は標準入力から読む
     #[arg(long)]
     script: Option<PathBuf>,
+
+    /// モデルをロードせず、ローマ字かな変換だけを実行
+    #[arg(long)]
+    romaji: Option<String>,
+
+    #[arg(long, value_enum, default_value_t = CliKanaMode::Hiragana)]
+    kana_mode: CliKanaMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum CliKanaMode {
+    #[default]
+    Hiragana,
+    Katakana,
+    HankakuKatakana,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     let config = BackendConfig::from_toml_file(args.config)?;
+    if let Some(romaji) = args.romaji {
+        let rule = RomKanaRule::load(&config.rom_kana_rule, &config.rule_search_paths)?;
+        let conversion = rule.convert(&romaji, args.kana_mode.into());
+        println!(
+            "output={:?} preedit={:?}",
+            conversion.output, conversion.preedit
+        );
+        return Ok(());
+    }
     let mut backend = Backend::load(config)?;
     let lines: Vec<String> = match args.script {
         Some(path) => fs::read_to_string(&path)
@@ -32,6 +56,16 @@ fn main() -> Result<()> {
         None => io::stdin().lock().lines().collect::<io::Result<_>>()?,
     };
     run_script(&mut backend, &lines)
+}
+
+impl From<CliKanaMode> for KanaMode {
+    fn from(mode: CliKanaMode) -> Self {
+        match mode {
+            CliKanaMode::Hiragana => Self::Hiragana,
+            CliKanaMode::Katakana => Self::Katakana,
+            CliKanaMode::HankakuKatakana => Self::HankakuKatakana,
+        }
+    }
 }
 
 fn run_script(backend: &mut Backend, lines: &[String]) -> Result<()> {
@@ -106,6 +140,19 @@ fn run_script(backend: &mut Backend, lines: &[String]) -> Result<()> {
                 println!("purged={}", backend.purge(candidate)?);
             }
             "register" => backend.register(&input, okuri.as_deref(), argument, None)?,
+            "kana" | "katakana" | "hankaku-katakana" => {
+                let mode = match command {
+                    "kana" => KanaMode::Hiragana,
+                    "katakana" => KanaMode::Katakana,
+                    "hankaku-katakana" => KanaMode::HankakuKatakana,
+                    _ => unreachable!(),
+                };
+                let conversion = backend.convert_romaji(argument, mode);
+                println!(
+                    "output={:?} preedit={:?}",
+                    conversion.output, conversion.preedit
+                );
+            }
             _ => bail!("{}行目: 未知のコマンドです: {command}", index + 1),
         }
     }

@@ -1,0 +1,12 @@
+{
+  "include": [
+    "base/default",
+    "local"
+  ],
+  "define": {
+    "rom-kana": {
+      "ka": ["", "カ"],
+      "xi": null
+    }
+  }
+}

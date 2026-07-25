@@ -4,12 +4,14 @@ use std::collections::{HashMap, HashSet};
 use crate::candidate::{Candidate, CandidateSource, DictionaryCandidate};
 use crate::config::BackendConfig;
 use crate::dictionary::{Dictionary, SkkFileDictionary, UserDictionary, open_system_dictionaries};
+use crate::rom_kana::{KanaConversion, KanaMode, RomKanaRule};
 use crate::zenz::{Score, ZenzScorer};
 
 pub struct Backend {
     scorer: ZenzScorer,
     system_dictionaries: Vec<SkkFileDictionary>,
     user_dictionary: UserDictionary,
+    rom_kana_rule: RomKanaRule,
     recency: HashMap<CandidateKey, u64>,
     sequence: u64,
 }
@@ -27,6 +29,7 @@ impl Backend {
             scorer: ZenzScorer::load(&config.zenz)?,
             system_dictionaries: open_system_dictionaries(&config.system_dictionaries)?,
             user_dictionary: UserDictionary::open(&config.user_dictionary)?,
+            rom_kana_rule: RomKanaRule::load(&config.rom_kana_rule, &config.rule_search_paths)?,
             recency: HashMap::new(),
             sequence: 0,
         })
@@ -38,6 +41,10 @@ impl Backend {
 
     pub fn prepare(&mut self, context: &str, input: &str) -> Result<Score> {
         self.scorer.prepare(context, input)
+    }
+
+    pub fn convert_romaji(&self, input: &str, mode: KanaMode) -> KanaConversion {
+        self.rom_kana_rule.convert(input, mode)
     }
 
     pub fn lookup(

@@ -36,7 +36,7 @@ SKKを現代的にしたいな!というモチベでPoCを作ってみます
   - [x] `lookup(context, input, okuri)`を提供する
   - [x] backendのコア機能を試せるCLIを提供する
   - [x] TOML設定ファイルからモデル・辞書・推論設定を読み込む
-  - [ ] 後回し: statelessなローマ字・かな変換API
+  - [x] libskkのrule定義とincludeを読むstatelessなローマ字・かな変換API
   - [ ] 後回し: 数値変換、辞書内Lisp式などの特殊変換
   - [ ] 後回し: `complete()`による見出し補完
   - [ ] 後回し: skkserv、CDB辞書
@@ -134,10 +134,19 @@ cargo run --release -p skk-zenz-backend -- --script path/to/backend.script
 model_path = "models/zenz-v3.2-xsmall-Q5_K_M.gguf"
 system_dictionaries = ["data/SKK-JISYO.L"]
 user_dictionary = "data/user.sqlite3"
+rom_kana_rule = "azik_mod"
 
 context_size = 1024
 # threads = 8
 gpu_layers = 999
+```
+
+rom-kana ruleは、libskkと同様に`$LIBSKK_DATA_PATH/*/rules`、または
+`$XDG_CONFIG_HOME/libskk/rules`（通常は`~/.config/libskk/rules`）などから探します。
+探索先を限定する場合は`rule_search_paths`を指定できます。
+
+```toml
+rule_search_paths = ["/path/to/libskk/rules"]
 ```
 
 `--script`を省略すると標準入力から操作列を読みます。各行は最初の空白でコマンドと値に
@@ -164,3 +173,13 @@ lookup る
 - `select N`: 直前の候補Nを選択し、user辞書とrecencyを更新
 - `purge N`: 直前の候補Nをuser辞書から削除
 - `register TEXT`: 現在のinput/okuriへ候補を明示登録
+- `kana ROMAJI`: ひらがなへ変換
+- `katakana ROMAJI`: カタカナへ変換
+- `hankaku-katakana ROMAJI`: 半角カタカナへ変換
+
+ローマ字かな変換だけを試す場合は、モデルや辞書をロードせずに実行できます。
+
+```console
+cargo run -p skk-zenz-backend -- --romaji kanji
+cargo run -p skk-zenz-backend -- --romaji kanji --kana-mode katakana
+```

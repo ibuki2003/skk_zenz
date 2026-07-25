@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::rom_kana::default_rule_search_paths;
 use crate::zenz::ZenzConfig;
 
 #[derive(Clone, Debug)]
@@ -11,6 +12,8 @@ pub struct BackendConfig {
     pub zenz: ZenzConfig,
     pub system_dictionaries: Vec<PathBuf>,
     pub user_dictionary: PathBuf,
+    pub rom_kana_rule: String,
+    pub rule_search_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -18,6 +21,9 @@ struct ConfigFile {
     model_path: PathBuf,
     system_dictionaries: Vec<PathBuf>,
     user_dictionary: PathBuf,
+    #[serde(default = "default_rom_kana_rule")]
+    rom_kana_rule: String,
+    rule_search_paths: Option<Vec<PathBuf>>,
     #[serde(default = "default_context_size")]
     context_size: u32,
     threads: Option<i32>,
@@ -45,6 +51,16 @@ impl BackendConfig {
                 .map(|path| resolve_path(base, path))
                 .collect(),
             user_dictionary: resolve_path(base, file.user_dictionary),
+            rom_kana_rule: file.rom_kana_rule,
+            rule_search_paths: file.rule_search_paths.map_or_else(
+                default_rule_search_paths,
+                |paths| {
+                    paths
+                        .into_iter()
+                        .map(|path| resolve_path(base, path))
+                        .collect()
+                },
+            ),
         })
     }
 }
@@ -65,6 +81,10 @@ const fn default_gpu_layers() -> u32 {
     999
 }
 
+fn default_rom_kana_rule() -> String {
+    "default".to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +101,7 @@ mod tests {
         .unwrap();
         assert_eq!(file.context_size, 1024);
         assert_eq!(file.gpu_layers, 999);
+        assert_eq!(file.rom_kana_rule, "default");
         assert_eq!(
             resolve_path(Path::new("/config"), file.model_path),
             Path::new("/config/models/model.gguf")
