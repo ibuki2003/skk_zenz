@@ -775,30 +775,17 @@ impl Backend {
                     return Ok((command == Some("commit"), Some(candidate.output)));
                 }
             }
-            Some(command) if upper_command_text(Some(command)).is_some() => {
+            _ if should_forward_after_selection(&event, command) => {
                 if let Some(candidate) = candidates.get(cursor).cloned() {
                     self.select(&candidate)?;
                     self.input_state.context.push_str(&candidate.output);
                     self.input_state.phase = Phase::Direct;
-                    let (_, following_commit) = self.handle_direct(event, Some(command))?;
+                    let (consumed, following_commit) = self.handle_direct(event, command)?;
                     let mut commit = candidate.output;
                     if let Some(following_commit) = following_commit {
                         commit.push_str(&following_commit);
                     }
-                    return Ok((true, Some(commit)));
-                }
-            }
-            None if should_commit_selection_for_event(&event, None) => {
-                if let Some(candidate) = candidates.get(cursor).cloned() {
-                    self.select(&candidate)?;
-                    self.input_state.context.push_str(&candidate.output);
-                    self.input_state.phase = Phase::Direct;
-                    let (_, following_commit) = self.handle_direct(event, None)?;
-                    let mut commit = candidate.output;
-                    if let Some(following_commit) = following_commit {
-                        commit.push_str(&following_commit);
-                    }
-                    return Ok((true, Some(commit)));
+                    return Ok((consumed, Some(commit)));
                 }
             }
             None => {
@@ -986,8 +973,7 @@ fn should_start_okuri(event: &KeyEvent, command: Option<&str>, stem: &Compositio
 }
 
 fn should_restore_preedit(command: Option<&str>, cursor: usize) -> bool {
-    matches!(command, Some("abort" | "delete"))
-        || command == Some("previous-candidate") && cursor == 0
+    command == Some("abort") || command == Some("previous-candidate") && cursor == 0
 }
 
 fn selection_source_phase(input: String, okuri: Option<String>, origin: SelectionOrigin) -> Phase {
@@ -1000,8 +986,8 @@ fn selection_source_phase(input: String, okuri: Option<String>, origin: Selectio
     }
 }
 
-fn should_commit_selection_for_event(event: &KeyEvent, command: Option<&str>) -> bool {
-    input_text(event, command).is_some()
+fn should_forward_after_selection(event: &KeyEvent, command: Option<&str>) -> bool {
+    command == Some("delete") || input_text(event, command).is_some()
 }
 
 fn supports_abbrev(mode: InputMode) -> bool {
@@ -1193,23 +1179,27 @@ mod tests {
     fn first_previous_candidate_returns_to_preedit() {
         assert!(should_restore_preedit(Some("previous-candidate"), 0));
         assert!(!should_restore_preedit(Some("previous-candidate"), 2));
-        assert!(should_restore_preedit(Some("delete"), 2));
+        assert!(!should_restore_preedit(Some("delete"), 2));
         assert!(should_restore_preedit(Some("abort"), 2));
     }
 
     #[test]
-    fn printable_key_commits_selection_but_modifier_does_not() {
-        assert!(should_commit_selection_for_event(
+    fn regular_input_is_forwarded_after_committing_selection() {
+        assert!(should_forward_after_selection(
             &KeyEvent::character("n", 'n', Modifiers::empty()),
             None
         ));
-        assert!(!should_commit_selection_for_event(
+        assert!(!should_forward_after_selection(
             &KeyEvent::named("Shift_L", Modifiers::SHIFT),
             None
         ));
-        assert!(should_commit_selection_for_event(
+        assert!(should_forward_after_selection(
             &KeyEvent::character(":", ':', Modifiers::SHIFT),
             Some("upper-;")
+        ));
+        assert!(should_forward_after_selection(
+            &KeyEvent::named("BackSpace", Modifiers::empty()),
+            Some("delete")
         ));
     }
 
