@@ -13,8 +13,11 @@ SKKを現代的にしたいな!というモチベでPoCを作ってみます
 - user辞書
   - sqliteを使用します
   - 毎回並び換え&全文保存を避けるようにしています
-- エントリのソートは、(from_user?: bool, ai_rank: float)をkeyとするイメージ
-  - zenzとuser recencyの使い分けが使いやすさに直結するはずなので、要調整。
+
+### ソート順序
+
+使いやすさに直結するはずで、要検証&調整。
+現在は、(from_user?: bool, recency: number, ai_rank: float)をkeyとしています
 
 ## roadmap (todo)
 
