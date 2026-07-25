@@ -18,15 +18,6 @@ pub struct Backend {
     rom_kana_rule: RomKanaRule,
     keymaps: HashMap<InputMode, Keymap>,
     input_state: InputState,
-    recency: HashMap<CandidateKey, u64>,
-    sequence: u64,
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct CandidateKey {
-    input: String,
-    okuri: Option<String>,
-    text: String,
 }
 
 impl Backend {
@@ -47,12 +38,13 @@ impl Backend {
         Ok(Self {
             scorer: ZenzScorer::load(&config.zenz)?,
             system_dictionaries: open_system_dictionaries(&config.system_dictionaries)?,
-            user_dictionary: UserDictionary::open(&config.user_dictionary)?,
+            user_dictionary: UserDictionary::open(
+                &config.user_dictionary,
+                config.recency_half_life_days,
+            )?,
             rom_kana_rule: RomKanaRule::load(&config.rom_kana_rule, &config.rule_search_paths)?,
             keymaps,
             input_state: InputState::default(),
-            recency: HashMap::new(),
-            sequence: 0,
         })
     }
 
@@ -128,7 +120,6 @@ impl Backend {
                 candidate.okuri.as_deref().unwrap_or_default()
             );
             let score = self.scorer.score(context, input, &output)?;
-            let key = CandidateKey::from(&candidate);
             candidates.push(Candidate {
                 input: candidate.input,
                 okuri: candidate.okuri,
@@ -138,31 +129,30 @@ impl Backend {
                 source: candidate.source,
                 loss: score.loss,
                 token_count: score.token_count,
-                recency: self.recency.get(&key).copied(),
-                use_count: candidate.use_count,
+                recency: candidate.recency,
             });
         }
         candidates.sort_by(|left, right| {
             source_order(left.source)
                 .cmp(&source_order(right.source))
-                .then_with(|| right.recency.cmp(&left.recency))
+                .then_with(|| recency_order(left.recency, right.recency))
                 .then_with(|| left.loss.total_cmp(&right.loss))
         });
         eprint!("[BACKEND] lookup -> ");
         for candidate in &candidates {
             eprint!(
-                "{:?}({}, {:?}, {}) ",
-                candidate.output, candidate.loss, candidate.recency, candidate.use_count
+                "{:?}({}, {:?}) ",
+                candidate.output, candidate.loss, candidate.recency
             );
         }
         Ok(candidates)
     }
 
     fn lookup_abbrev(&self, input: &str) -> Result<Vec<Candidate>> {
-        self.lookup_dictionaries(input, None)?
+        let mut candidates = self
+            .lookup_dictionaries(input, None)?
             .into_iter()
             .map(|candidate| {
-                let key = CandidateKey::from(&candidate);
                 Ok(Candidate {
                     input: candidate.input,
                     okuri: None,
@@ -172,11 +162,16 @@ impl Backend {
                     source: candidate.source,
                     loss: 0.0,
                     token_count: 0,
-                    recency: self.recency.get(&key).copied(),
-                    use_count: candidate.use_count,
+                    recency: candidate.recency,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        candidates.sort_by(|left, right| {
+            source_order(left.source)
+                .cmp(&source_order(right.source))
+                .then_with(|| recency_order(left.recency, right.recency))
+        });
+        Ok(candidates)
     }
 
     fn lookup_dictionaries(
@@ -212,21 +207,15 @@ impl Backend {
 
     pub fn select(&mut self, candidate: &Candidate) -> Result<()> {
         let dictionary_candidate = DictionaryCandidate::from(candidate);
-        self.user_dictionary.select(&dictionary_candidate)?;
-        self.sequence = self.sequence.wrapping_add(1);
-        self.recency
-            .insert(CandidateKey::from(&dictionary_candidate), self.sequence);
-        Ok(())
+        self.user_dictionary.select(&dictionary_candidate)
     }
 
     pub fn purge(&mut self, candidate: &Candidate) -> Result<bool> {
-        let removed = self.user_dictionary.purge(
+        self.user_dictionary.purge(
             &candidate.input,
             candidate.okuri.as_deref(),
             &candidate.text,
-        )?;
-        self.recency.remove(&CandidateKey::from(candidate));
-        Ok(removed)
+        )
     }
 
     fn handle_key(&mut self, event: KeyEvent) -> Result<(bool, Option<String>)> {
@@ -728,24 +717,10 @@ fn source_order(source: CandidateSource) -> u8 {
     }
 }
 
-impl From<&DictionaryCandidate> for CandidateKey {
-    fn from(candidate: &DictionaryCandidate) -> Self {
-        Self {
-            input: candidate.input.clone(),
-            okuri: candidate.okuri.clone(),
-            text: candidate.text.clone(),
-        }
-    }
-}
-
-impl From<&Candidate> for CandidateKey {
-    fn from(candidate: &Candidate) -> Self {
-        Self {
-            input: candidate.input.clone(),
-            okuri: candidate.okuri.clone(),
-            text: candidate.text.clone(),
-        }
-    }
+fn recency_order(left: Option<f64>, right: Option<f64>) -> std::cmp::Ordering {
+    right
+        .unwrap_or_default()
+        .total_cmp(&left.unwrap_or_default())
 }
 
 impl From<&Candidate> for DictionaryCandidate {
@@ -756,7 +731,7 @@ impl From<&Candidate> for DictionaryCandidate {
             text: candidate.text.clone(),
             annotation: candidate.annotation.clone(),
             source: candidate.source,
-            use_count: candidate.use_count,
+            recency: candidate.recency,
         }
     }
 }
@@ -847,6 +822,15 @@ mod tests {
         assert!(supports_abbrev(InputMode::HankakuKatakana));
         assert!(!supports_abbrev(InputMode::Latin));
         assert!(!supports_abbrev(InputMode::WideLatin));
+    }
+
+    #[test]
+    fn higher_decayed_frequency_sorts_first() {
+        assert_eq!(
+            recency_order(Some(2.0), Some(1.0)),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(recency_order(None, Some(1.0)), std::cmp::Ordering::Greater);
     }
 
     #[test]

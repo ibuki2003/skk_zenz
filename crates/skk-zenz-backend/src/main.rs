@@ -114,12 +114,11 @@ fn run_script(backend: &mut Backend, lines: &[String]) -> Result<()> {
                 );
                 for (candidate_index, candidate) in candidates.iter().enumerate() {
                     println!(
-                        "{candidate_index:>3} {:?} loss={:.4} tokens={} recent={:?} uses={} {}{}",
+                        "{candidate_index:>3} {:?} loss={:.4} tokens={} recency={:?} {}{}",
                         candidate.source,
                         candidate.loss,
                         candidate.token_count,
                         candidate.recency,
-                        candidate.use_count,
                         candidate.output,
                         candidate
                             .annotation

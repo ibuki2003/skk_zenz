@@ -76,9 +76,11 @@ rom_kana_rule = "azik_mod"
 context_size = 1024
 # threads = 8
 gpu_layers = 999
+recency_half_life_days = 14.0
 ```
 
 ユーザ辞書は同じディレクトリの`user.sqlite3`
+候補の使用頻度は時間とともに指数減衰し、`recency_half_life_days`で半減期を日数指定できます。
 system辞書は`~/.config/skk-zenz/dictionary_list`へ1行1ファイルで指定 相対パスも使えます
 
 このファイルがない場合は `$XDG_DATA_HOME/fcitx5/skk/dictionary_list`を代わりに使用します

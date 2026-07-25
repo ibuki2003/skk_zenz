@@ -17,6 +17,7 @@ pub struct BackendConfig {
     pub zenz: ZenzConfig,
     pub system_dictionaries: Vec<PathBuf>,
     pub user_dictionary: PathBuf,
+    pub recency_half_life_days: f64,
     pub rom_kana_rule: String,
     pub rule_search_paths: Vec<PathBuf>,
 }
@@ -33,6 +34,8 @@ struct ConfigFile {
     threads: Option<i32>,
     #[serde(default = "default_gpu_layers")]
     gpu_layers: u32,
+    #[serde(default = "default_recency_half_life_days")]
+    recency_half_life_days: f64,
 }
 
 impl BackendConfig {
@@ -50,6 +53,12 @@ impl BackendConfig {
             .with_context(|| format!("設定ファイルを読めません: {}", path.display()))?;
         let file: ConfigFile = toml::from_str(&contents)
             .with_context(|| format!("設定ファイルを解釈できません: {}", path.display()))?;
+        if !file.recency_half_life_days.is_finite()
+            || file.recency_half_life_days <= 0.0
+            || !(file.recency_half_life_days * 86_400.0).is_finite()
+        {
+            anyhow::bail!("recency_half_life_days は正の有限値にしてください");
+        }
         let base = path.parent().unwrap_or_else(|| Path::new(""));
         let config_dir = config_dir()?;
         let model_path = match file.model_path {
@@ -68,6 +77,7 @@ impl BackendConfig {
             zenz,
             system_dictionaries: load_dictionary_paths(&config_dir)?,
             user_dictionary: config_dir.join(USER_DICTIONARY),
+            recency_half_life_days: file.recency_half_life_days,
             rom_kana_rule: file.rom_kana_rule,
             rule_search_paths: rule_search_paths(&config_dir)?,
         })
@@ -199,6 +209,10 @@ const fn default_gpu_layers() -> u32 {
     999
 }
 
+const fn default_recency_half_life_days() -> f64 {
+    14.0
+}
+
 fn default_rom_kana_rule() -> String {
     "default".to_owned()
 }
@@ -223,6 +237,7 @@ mod tests {
         assert_eq!(file.huggingface, default_huggingface_model());
         assert_eq!(file.context_size, 1024);
         assert_eq!(file.gpu_layers, 999);
+        assert_eq!(file.recency_half_life_days, 14.0);
         assert_eq!(file.rom_kana_rule, "default");
     }
 

@@ -111,7 +111,7 @@ impl Dictionary for SkkFileDictionary {
                 text: entry.text.clone(),
                 annotation: entry.annotation.clone(),
                 source: CandidateSource::System,
-                use_count: 0,
+                recency: None,
             })
             .collect())
     }

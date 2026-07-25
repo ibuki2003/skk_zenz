@@ -224,7 +224,6 @@ mod tests {
                 loss: 0.0,
                 token_count: 1,
                 recency: None,
-                use_count: 0,
             }],
             cursor: 0,
             origin: SelectionOrigin::Preedit,
