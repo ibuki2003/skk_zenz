@@ -13,6 +13,10 @@ pub(crate) struct UserDictionary {
 }
 
 impl UserDictionary {
+    pub(crate) fn set_half_life_days(&mut self, half_life_days: f64) {
+        self.half_life_seconds = half_life_days * 86_400.0;
+    }
+
     pub(crate) fn open(path: &Path, half_life_days: f64) -> Result<Self> {
         let connection = Connection::open(path)
             .with_context(|| format!("user辞書を開けません: {}", path.display()))?;

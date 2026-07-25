@@ -31,6 +31,7 @@ pub struct FfiUpdate {
 }
 
 pub type UpdateCallback = unsafe extern "C" fn(*mut c_void, *const FfiUpdate);
+pub type MessageCallback = unsafe extern "C" fn(*mut c_void, bool, *const c_char);
 
 unsafe fn required_str<'a>(value: *const c_char) -> Option<&'a str> {
     if value.is_null() {
@@ -107,6 +108,12 @@ fn nul_terminated(value: &str) -> Vec<u8> {
     bytes
 }
 
+fn send_message(user_data: *mut c_void, callback: MessageCallback, success: bool, message: &str) {
+    let message = nul_terminated(message);
+    // SAFETY: message remains alive for the synchronous callback.
+    unsafe { callback(user_data, success, message.as_ptr().cast()) };
+}
+
 fn dispatch(
     backend: *mut Backend,
     event: InputEvent,
@@ -148,6 +155,78 @@ pub unsafe extern "C" fn skk_zenz_backend_poll_rerank(
         with_update(&update, backend.rerank_pending(), user_data, callback);
     }
     backend.rerank_pending()
+}
+
+/// Returns the inotify descriptor used for configuration changes.
+///
+/// # Safety
+/// `backend` must be a live pointer returned by this library.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn skk_zenz_backend_config_watch_fd(backend: *mut Backend) -> i32 {
+    // SAFETY: backend is exclusively owned by the C++ engine.
+    unsafe { backend.as_ref() }.map_or(-1, Backend::config_watch_fd)
+}
+
+/// Applies a pending configuration-file change and reports its result.
+///
+/// # Safety
+/// `backend` must be live and `callback` must be callable for this invocation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn skk_zenz_backend_reload_config_if_changed(
+    backend: *mut Backend,
+    user_data: *mut c_void,
+    callback: MessageCallback,
+) -> bool {
+    // SAFETY: backend is exclusively owned by the C++ engine.
+    let Some(backend) = (unsafe { backend.as_mut() }) else {
+        return false;
+    };
+    let Some(result) = backend.reload_config_if_changed() else {
+        return false;
+    };
+    match result {
+        Ok(()) if backend.model_reload_pending() => {
+            send_message(
+                user_data,
+                callback,
+                true,
+                "設定を再読み込みしました。AIモデルを更新中です",
+            );
+        }
+        Ok(()) => send_message(user_data, callback, true, "設定を再読み込みしました"),
+        Err(error) => send_message(
+            user_data,
+            callback,
+            false,
+            &format!("設定の再読み込みに失敗しました: {error:#}"),
+        ),
+    }
+    true
+}
+
+/// Reports completion of an asynchronous model reload.
+///
+/// # Safety
+/// `backend` must be live and `callback` must be callable for this invocation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn skk_zenz_backend_poll_model_reload(
+    backend: *mut Backend,
+    user_data: *mut c_void,
+    callback: MessageCallback,
+) -> bool {
+    // SAFETY: backend is exclusively owned by the C++ engine.
+    let Some(backend) = (unsafe { backend.as_mut() }) else {
+        return false;
+    };
+    if let Some(Err(error)) = backend.poll_model_reload() {
+        send_message(
+            user_data,
+            callback,
+            false,
+            &format!("AIモデルの更新に失敗しました。以前のモデルを使用します: {error:#}"),
+        );
+    }
+    backend.model_reload_pending()
 }
 
 /// Creates the backend from a TOML file.

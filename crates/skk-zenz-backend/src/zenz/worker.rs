@@ -34,6 +34,9 @@ enum WorkerCommand {
         context: String,
         input: String,
     },
+    Reload {
+        config: ZenzConfig,
+    },
     Rerank {
         generation: u64,
         context: String,
@@ -48,6 +51,7 @@ enum WorkerCommand {
 pub(crate) struct ZenzWorker {
     commands: Sender<WorkerCommand>,
     updates: Receiver<RerankUpdate>,
+    reload_updates: Receiver<Result<(), String>>,
     thread: Option<JoinHandle<()>>,
     next_generation: u64,
 }
@@ -56,6 +60,7 @@ impl ZenzWorker {
     pub(crate) fn load(config: ZenzConfig) -> Result<Self> {
         let (commands, command_receiver) = mpsc::channel();
         let (updates, update_receiver) = mpsc::channel();
+        let (reload_updates, reload_update_receiver) = mpsc::channel();
         let (ready_sender, ready_receiver) = mpsc::sync_channel(0);
         let thread = thread::Builder::new()
             .name("skk-zenz-scorer".to_owned())
@@ -64,7 +69,7 @@ impl ZenzWorker {
                 match scorer {
                     Ok(scorer) => {
                         let _ = ready_sender.send(Ok(()));
-                        run_worker(scorer, command_receiver, updates);
+                        run_worker(scorer, command_receiver, updates, reload_updates);
                     }
                     Err(error) => {
                         let _ = ready_sender.send(Err(format!("{error:#}")));
@@ -79,6 +84,7 @@ impl ZenzWorker {
             Ok(()) => Ok(Self {
                 commands,
                 updates: update_receiver,
+                reload_updates: reload_update_receiver,
                 thread: Some(thread),
                 next_generation: 1,
             }),
@@ -110,6 +116,16 @@ impl ZenzWorker {
             context: context.to_owned(),
             input: input.to_owned(),
         });
+    }
+
+    pub(crate) fn reload(&self, config: ZenzConfig) -> Result<()> {
+        self.commands
+            .send(WorkerCommand::Reload { config })
+            .context("AI評価workerへモデル再読み込み要求を送信できません")
+    }
+
+    pub(crate) fn try_reload_update(&self) -> Option<Result<(), String>> {
+        self.reload_updates.try_recv().ok()
     }
 
     pub(crate) fn rerank(
@@ -168,6 +184,7 @@ fn run_worker(
     mut scorer: ZenzScorer,
     commands: Receiver<WorkerCommand>,
     updates: Sender<RerankUpdate>,
+    reload_updates: Sender<Result<(), String>>,
 ) {
     let mut pending = None;
     loop {
@@ -216,6 +233,10 @@ fn run_worker(
                 if !superseded && let Err(error) = scorer.prepare(&context, &input) {
                     eprintln!("speculative prepare failed: {error:#}");
                 }
+            }
+            WorkerCommand::Reload { config } => {
+                let result = scorer.reload(&config).map_err(|error| format!("{error:#}"));
+                let _ = reload_updates.send(result);
             }
             WorkerCommand::Rerank {
                 generation,

@@ -30,7 +30,7 @@ self_cell!(
     }
 );
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ZenzConfig {
     pub model_path: PathBuf,
     pub context_size: u32,
@@ -75,37 +75,21 @@ impl ZenzScorer {
             send_logs_to_tracing(LogOptions::default().with_logs_enabled(false));
         });
         let backend = LlamaBackend::init().context("llama.cpp backendの初期化に失敗しました")?;
-        let load_started = Instant::now();
-        let model = load_model(&backend, &config.model_path, config.gpu_layers)?;
-        eprintln!(
-            "model loaded from {}, took {:.2} sec.",
-            config.model_path.display(),
-            load_started.elapsed().as_secs_f64()
-        );
-        let mut context_params = LlamaContextParams::default()
-            .with_n_ctx(Some(
-                NonZeroU32::new(config.context_size).context("context_sizeは1以上必要です")?,
-            ))
-            .with_n_seq_max(config.parallel_sequences);
-        if config.parallel_sequences == 0 {
-            bail!("parallel_sequencesは1以上必要です");
-        }
-        if let Some(threads) = config.threads {
-            context_params = context_params
-                .with_n_threads(threads)
-                .with_n_threads_batch(threads);
-        }
-        let model_and_context = ModelAndContext::try_new(model, |model| {
-            model
-                .new_context(&backend, context_params)
-                .context("推論contextの作成に失敗しました")
-        })?;
+        let model_and_context = load_model_and_context(&backend, config)?;
         Ok(Self {
             model_and_context,
             cached_tokens: Vec::new(),
             parallel_sequences: config.parallel_sequences,
             backend,
         })
+    }
+
+    pub(crate) fn reload(&mut self, config: &ZenzConfig) -> Result<()> {
+        let model_and_context = load_model_and_context(&self.backend, config)?;
+        self.model_and_context = model_and_context;
+        self.cached_tokens.clear();
+        self.parallel_sequences = config.parallel_sequences;
+        Ok(())
     }
 
     pub fn clear(&mut self) {
@@ -274,6 +258,34 @@ impl ZenzScorer {
                 Ok(scores)
             })
     }
+}
+
+fn load_model_and_context(backend: &LlamaBackend, config: &ZenzConfig) -> Result<ModelAndContext> {
+    if config.parallel_sequences == 0 {
+        bail!("parallel_sequencesは1以上必要です");
+    }
+    let load_started = Instant::now();
+    let model = load_model(backend, &config.model_path, config.gpu_layers)?;
+    eprintln!(
+        "model loaded from {}, took {:.2} sec.",
+        config.model_path.display(),
+        load_started.elapsed().as_secs_f64()
+    );
+    let mut context_params = LlamaContextParams::default()
+        .with_n_ctx(Some(
+            NonZeroU32::new(config.context_size).context("context_sizeは1以上必要です")?,
+        ))
+        .with_n_seq_max(config.parallel_sequences);
+    if let Some(threads) = config.threads {
+        context_params = context_params
+            .with_n_threads(threads)
+            .with_n_threads_batch(threads);
+    }
+    ModelAndContext::try_new(model, |model| {
+        model
+            .new_context(backend, context_params)
+            .context("推論contextの作成に失敗しました")
+    })
 }
 
 fn load_model(backend: &LlamaBackend, path: &Path, gpu_layers: u32) -> Result<LlamaModel> {

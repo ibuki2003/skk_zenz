@@ -1,6 +1,7 @@
 mod backend;
 mod candidate;
 mod config;
+mod config_watcher;
 mod dictionary;
 mod input;
 mod keymap;

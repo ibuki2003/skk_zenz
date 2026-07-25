@@ -26,6 +26,7 @@
 #include <fcitx/surroundingtext.h>
 #include <fcitx/text.h>
 #include <fcitx/userinterfacemanager.h>
+#include <notifications_public.h>
 #include <fcitx-utils/event.h>
 #include <fcitx-utils/key.h>
 
@@ -56,6 +57,8 @@ struct SkkZenzUpdate {
 
 using SkkZenzUpdateCallback =
     void (*)(void *userData, const SkkZenzUpdate *update);
+using SkkZenzMessageCallback =
+    void (*)(void *userData, bool success, const char *message);
 
 SkkZenzBackend *skk_zenz_backend_new(const char *configPath);
 void skk_zenz_backend_free(SkkZenzBackend *backend);
@@ -75,6 +78,13 @@ bool skk_zenz_backend_set_input_mode(
 bool skk_zenz_backend_poll_rerank(
     SkkZenzBackend *backend, void *userData,
     SkkZenzUpdateCallback callback);
+int skk_zenz_backend_config_watch_fd(SkkZenzBackend *backend);
+bool skk_zenz_backend_reload_config_if_changed(
+    SkkZenzBackend *backend, void *userData,
+    SkkZenzMessageCallback callback);
+bool skk_zenz_backend_poll_model_reload(
+    SkkZenzBackend *backend, void *userData,
+    SkkZenzMessageCallback callback);
 bool skk_zenz_backend_select_candidate(
     SkkZenzBackend *backend, std::size_t index, void *userData,
     SkkZenzUpdateCallback callback);
@@ -321,6 +331,24 @@ public:
                 return true;
             });
         rerankTimer_->setEnabled(false);
+        modelReloadTimer_ = instance_->eventLoop().addTimeEvent(
+            CLOCK_MONOTONIC,
+            fcitx::now(CLOCK_MONOTONIC) + 100'000, 0,
+            [this](
+                fcitx::EventSourceTime *timer, std::uint64_t) {
+                auto *backend =
+                    backend_.load(std::memory_order_acquire);
+                if (!backend ||
+                    !skk_zenz_backend_poll_model_reload(
+                        backend, this, configMessageCallback)) {
+                    timer->setEnabled(false);
+                } else {
+                    timer->setNextInterval(100'000);
+                    timer->setOneShot();
+                }
+                return true;
+            });
+        modelReloadTimer_->setEnabled(false);
         eventHandlers_.emplace_back(instance_->watchEvent(
             fcitx::EventType::InputContextKeyEvent,
             fcitx::EventWatcherPhase::PostInputMethod,
@@ -364,9 +392,12 @@ public:
         FCITX_UNUSED(entry);
         event.inputContext()->statusArea().addAction(
             fcitx::StatusGroup::InputMethod, modeAction_.get());
+        ensureConfigWatcher();
     }
 
     ~SkkZenzEngine() override {
+        configEvent_.reset();
+        modelReloadTimer_.reset();
         rerankTimer_.reset();
         initializationThread_.join();
         skk_zenz_backend_free(
@@ -381,6 +412,7 @@ public:
         if (!backend || event.isRelease()) {
             return;
         }
+        ensureConfigWatcher();
 
         const auto candidateIndex = event.key().digitSelection();
         if (candidateWindowVisible_ && candidateIndex >= 0 &&
@@ -563,6 +595,59 @@ public:
     }
 
 private:
+    static void configMessageCallback(
+        void *userData, bool success, const char *message) {
+        static_cast<SkkZenzEngine *>(userData)->showConfigMessage(
+            success, message);
+    }
+
+    void showConfigMessage(bool success, const char *message) {
+        auto *notifications =
+            instance_->addonManager().addon("notifications", true);
+        if (!notifications) {
+            return;
+        }
+        notifications->call<fcitx::INotifications::showTip>(
+            "skk-zenz-config", "SKK Zenz", "",
+            success ? "SKK Zenz configuration"
+                    : "SKK Zenz configuration error",
+            message ? message : "", 5000);
+    }
+
+    void ensureConfigWatcher() {
+        if (configEvent_) {
+            return;
+        }
+        auto *backend = backend_.load(std::memory_order_acquire);
+        if (!backend) {
+            return;
+        }
+        const int fd = skk_zenz_backend_config_watch_fd(backend);
+        if (fd < 0) {
+            return;
+        }
+        configEvent_ = instance_->eventLoop().addIOEvent(
+            fd, fcitx::IOEventFlag::In,
+            [this](
+                fcitx::EventSourceIO *, int,
+                fcitx::IOEventFlags) {
+                auto *backend =
+                    backend_.load(std::memory_order_acquire);
+                if (!backend) {
+                    return true;
+                }
+                skk_zenz_backend_reload_config_if_changed(
+                    backend, this, configMessageCallback);
+                if (skk_zenz_backend_poll_model_reload(
+                        backend, this, configMessageCallback)) {
+                    modelReloadTimer_->setNextInterval(100'000);
+                    modelReloadTimer_->setOneShot();
+                    modelReloadTimer_->setEnabled(true);
+                }
+                return true;
+            });
+    }
+
     static void updateCallback(
         void *userData, const SkkZenzUpdate *update) {
         auto *target = static_cast<UpdateTarget *>(userData);
@@ -723,6 +808,8 @@ private:
     std::vector<std::unique_ptr<ModeSubAction>> modeSubActions_;
     fcitx::InputContext *rerankContext_ = nullptr;
     std::unique_ptr<fcitx::EventSourceTime> rerankTimer_;
+    std::unique_ptr<fcitx::EventSourceIO> configEvent_;
+    std::unique_ptr<fcitx::EventSourceTime> modelReloadTimer_;
 };
 
 class SkkZenzEngineFactory final : public fcitx::AddonFactory {

@@ -15,6 +15,7 @@ const USER_DICTIONARY: &str = "user.sqlite3";
 
 #[derive(Clone, Debug)]
 pub struct BackendConfig {
+    pub config_path: PathBuf,
     pub zenz: ZenzConfig,
     pub system_dictionaries: Vec<PathBuf>,
     pub user_dictionary: PathBuf,
@@ -143,6 +144,7 @@ impl BackendConfig {
         zenz.threads = file.threads;
         zenz.gpu_layers = file.gpu_layers;
         Ok(Self {
+            config_path: path.to_owned(),
             zenz,
             system_dictionaries: load_dictionary_paths(&config_dir)?,
             user_dictionary: config_dir.join(USER_DICTIONARY),

@@ -1126,6 +1126,7 @@ dependencies = [
  "encoding_rs",
  "hf-hub",
  "iconv-native",
+ "libc",
  "llama-cpp-2",
  "rusqlite",
  "self_cell",

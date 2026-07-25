@@ -3,6 +3,7 @@ project(skk-zenz VERSION 0.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 find_package(Fcitx5Core REQUIRED)
+find_package(Fcitx5ModuleNotifications REQUIRED)
 find_package(OpenMP REQUIRED)
 include("${FCITX_INSTALL_CMAKECONFIG_DIR}/Fcitx5Utils/Fcitx5CompilerSettings.cmake")
 
@@ -46,7 +47,7 @@ add_library(
 add_dependencies(skk-zenz skk-zenz-rust)
 target_link_libraries(
     skk-zenz
-    PRIVATE Fcitx5::Core OpenMP::OpenMP_CXX "${RUST_LIBRARY}"
+    PRIVATE Fcitx5::Core Fcitx5::Module::Notifications OpenMP::OpenMP_CXX "${RUST_LIBRARY}"
 )
 set_target_properties(skk-zenz PROPERTIES PREFIX "")
 
