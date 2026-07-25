@@ -6,7 +6,7 @@ use crate::config::BackendConfig;
 use crate::dictionary::{Dictionary, SkkFileDictionary, UserDictionary, open_system_dictionaries};
 use crate::input::{Composition, InputEvent, InputMode, InputState, InputUpdate, Phase};
 use crate::keymap::{KeyEvent, Keymap, Modifiers};
-use crate::rom_kana::{KanaConversion, KanaMode, RomKanaRule};
+use crate::rom_kana::{KanaConversion, KanaMode, RomKanaRule, convert_kana_script};
 use crate::zenz::{Score, ZenzScorer};
 
 pub struct Backend {
@@ -33,6 +33,8 @@ impl Backend {
             (InputMode::Hiragana, "hiragana"),
             (InputMode::Katakana, "katakana"),
             (InputMode::HankakuKatakana, "hankaku-katakana"),
+            (InputMode::Latin, "latin"),
+            (InputMode::WideLatin, "wide-latin"),
         ]
         .into_iter()
         .map(|(mode, name)| {
@@ -231,19 +233,10 @@ impl Backend {
         command: Option<&str>,
     ) -> Result<(bool, Option<String>)> {
         self.input_state.phase = Phase::Direct;
+        if let Some(mode) = direct_mode_transition(command, &self.input_state.direct_pending) {
+            return Ok(self.set_input_mode(mode));
+        }
         match command {
-            Some("set-input-mode-hiragana") => {
-                self.input_state.mode = InputMode::Hiragana;
-                return Ok((true, None));
-            }
-            Some("set-input-mode-katakana") => {
-                self.input_state.mode = InputMode::Katakana;
-                return Ok((true, None));
-            }
-            Some("set-input-mode-hankaku-katakana") => {
-                self.input_state.mode = InputMode::HankakuKatakana;
-                return Ok((true, None));
-            }
             Some("delete") => {
                 return Ok((self.input_state.direct_pending.pop().is_some(), None));
             }
@@ -266,6 +259,18 @@ impl Backend {
         let Some(text) = event.text.as_deref() else {
             return Ok((false, None));
         };
+        if matches!(
+            self.input_state.mode,
+            InputMode::Latin | InputMode::WideLatin
+        ) {
+            let output = match self.input_state.mode {
+                InputMode::Latin => text.to_owned(),
+                InputMode::WideLatin => to_wide_latin(text),
+                _ => unreachable!("mode checked above"),
+            };
+            self.input_state.context.push_str(&output);
+            return Ok((true, Some(output)));
+        }
         if is_preedit_start(&event) {
             let mut stem = Composition::default();
             stem.push(
@@ -296,6 +301,21 @@ impl Backend {
         mut stem: Composition,
         mut okuri: Option<Composition>,
     ) -> Result<(bool, Option<String>)> {
+        if let Some(
+            mode @ (InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana),
+        ) = command.and_then(input_mode_for_command)
+        {
+            let output = composition_output(
+                &self.rom_kana_rule,
+                self.input_state.mode,
+                &stem,
+                okuri.as_ref(),
+            );
+            let output = convert_kana_script(&output, mode.into());
+            self.input_state.context.push_str(&output);
+            self.input_state.phase = Phase::Direct;
+            return Ok((true, Some(output)));
+        }
         match command {
             Some("abort") => {
                 self.input_state.phase = Phase::Direct;
@@ -488,6 +508,15 @@ impl Backend {
         Some(value)
     }
 
+    fn set_input_mode(&mut self, mode: InputMode) -> (bool, Option<String>) {
+        let commit = self.finish_direct();
+        if let Some(commit) = &commit {
+            self.input_state.context.push_str(commit);
+        }
+        self.input_state.mode = mode;
+        (true, commit)
+    }
+
     fn finish_input(&mut self) -> Result<Option<String>> {
         match &self.input_state.phase {
             Phase::Direct => Ok(self.finish_direct()),
@@ -528,6 +557,36 @@ fn previous_candidate(cursor: usize) -> Option<usize> {
 
 fn should_commit_selection_for_event(event: &KeyEvent) -> bool {
     event.text.is_some()
+}
+
+fn input_mode_for_command(command: &str) -> Option<InputMode> {
+    match command {
+        "set-input-mode-hiragana" => Some(InputMode::Hiragana),
+        "set-input-mode-katakana" => Some(InputMode::Katakana),
+        "set-input-mode-hankaku-katakana" => Some(InputMode::HankakuKatakana),
+        "set-input-mode-latin" => Some(InputMode::Latin),
+        "set-input-mode-wide-latin" => Some(InputMode::WideLatin),
+        _ => None,
+    }
+}
+
+fn direct_mode_transition(command: Option<&str>, pending: &str) -> Option<InputMode> {
+    pending
+        .is_empty()
+        .then(|| command.and_then(input_mode_for_command))
+        .flatten()
+}
+
+fn to_wide_latin(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            ' ' => '\u{3000}',
+            '!'..='~' => char::from_u32(character as u32 + 0xfee0)
+                .expect("ASCII fullwidth mapping is valid Unicode"),
+            _ => character,
+        })
+        .collect()
 }
 
 fn composition_output(
@@ -628,5 +687,47 @@ mod tests {
             "Shift_L",
             Modifiers::SHIFT
         )));
+    }
+
+    #[test]
+    fn converts_ascii_to_wide_latin() {
+        assert_eq!(to_wide_latin("Az 09!?"), "Ａｚ　０９！？");
+        assert_eq!(to_wide_latin("日本語"), "日本語");
+    }
+
+    #[test]
+    fn maps_all_five_input_mode_commands() {
+        assert_eq!(
+            input_mode_for_command("set-input-mode-hiragana"),
+            Some(InputMode::Hiragana)
+        );
+        assert_eq!(
+            input_mode_for_command("set-input-mode-katakana"),
+            Some(InputMode::Katakana)
+        );
+        assert_eq!(
+            input_mode_for_command("set-input-mode-hankaku-katakana"),
+            Some(InputMode::HankakuKatakana)
+        );
+        assert_eq!(
+            input_mode_for_command("set-input-mode-latin"),
+            Some(InputMode::Latin)
+        );
+        assert_eq!(
+            input_mode_for_command("set-input-mode-wide-latin"),
+            Some(InputMode::WideLatin)
+        );
+    }
+
+    #[test]
+    fn does_not_change_mode_in_the_middle_of_romaji() {
+        assert_eq!(
+            direct_mode_transition(Some("set-input-mode-latin"), ""),
+            Some(InputMode::Latin)
+        );
+        assert_eq!(
+            direct_mode_transition(Some("set-input-mode-latin"), "k"),
+            None
+        );
     }
 }

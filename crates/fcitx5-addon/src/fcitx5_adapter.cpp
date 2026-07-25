@@ -16,6 +16,7 @@
 #include <fcitx/instance.h>
 #include <fcitx/surroundingtext.h>
 #include <fcitx/text.h>
+#include <fcitx-utils/event.h>
 #include <fcitx-utils/key.h>
 
 extern "C" {
@@ -33,6 +34,7 @@ struct SkkZenzUpdate {
     const SkkZenzCandidate *candidates;
     std::size_t candidateCount;
     std::size_t selectedCandidate;
+    std::uint8_t inputMode;
 };
 
 using SkkZenzUpdateCallback =
@@ -145,9 +147,8 @@ std::string inputText(const fcitx::Key &key) {
 class SkkZenzEngine final : public fcitx::InputMethodEngineV2 {
 public:
     explicit SkkZenzEngine(fcitx::Instance *instance)
-        : backend_(skk_zenz_backend_new("skk-zenz.toml")) {
-        FCITX_UNUSED(instance);
-    }
+        : instance_(instance),
+          backend_(skk_zenz_backend_new("skk-zenz.toml")) {}
 
     ~SkkZenzEngine() override { skk_zenz_backend_free(backend_); }
 
@@ -190,6 +191,7 @@ public:
         const fcitx::InputMethodEntry &entry,
         fcitx::InputContextEvent &event) override {
         FCITX_UNUSED(entry);
+        hideModeIndicator();
         focusOut(event.inputContext());
     }
 
@@ -215,6 +217,10 @@ public:
         const fcitx::Text preedit(update.preedit);
         panel.setClientPreedit(preedit);
         panel.setPreedit(preedit);
+        if (update.inputMode != lastInputMode_) {
+            lastInputMode_ = update.inputMode;
+            showModeIndicator(inputContext, update.inputMode);
+        }
 
         if (update.candidateCount == 0) {
             candidateCount_ = 0;
@@ -312,9 +318,45 @@ private:
             backend_, index, &target, updateCallback);
     }
 
+    void showModeIndicator(
+        fcitx::InputContext *inputContext, std::uint8_t mode) {
+        static constexpr const char *MODE_LABELS[] = {
+            "[あ]", "[ア]", "[ｱ]", "[A]", "[Ａ]",
+        };
+        modeTimer_.reset();
+        modeIndicatorContext_ = inputContext;
+        inputContext->inputPanel().setAuxUp(
+            fcitx::Text(MODE_LABELS[mode < 5 ? mode : 0]));
+        modeTimer_ = instance_->eventLoop().addTimeEvent(
+            CLOCK_MONOTONIC,
+            fcitx::now(CLOCK_MONOTONIC) + 1'200'000, 0,
+            [this, inputContext](
+                fcitx::EventSourceTime *, std::uint64_t) {
+                if (modeIndicatorContext_ == inputContext) {
+                    inputContext->inputPanel().setAuxUp({});
+                    inputContext->updateUserInterface(
+                        fcitx::UserInterfaceComponent::InputPanel);
+                    modeIndicatorContext_ = nullptr;
+                }
+                return false;
+            });
+    }
+
+    void hideModeIndicator() {
+        modeTimer_.reset();
+        if (modeIndicatorContext_) {
+            modeIndicatorContext_->inputPanel().setAuxUp({});
+            modeIndicatorContext_ = nullptr;
+        }
+    }
+
+    fcitx::Instance *instance_;
     SkkZenzBackend *backend_;
     std::size_t candidateCount_ = 0;
     std::size_t candidatePageOffset_ = 0;
+    std::uint8_t lastInputMode_ = 0;
+    fcitx::InputContext *modeIndicatorContext_ = nullptr;
+    std::unique_ptr<fcitx::EventSourceTime> modeTimer_;
 };
 
 class SkkZenzEngineFactory final : public fcitx::AddonFactory {

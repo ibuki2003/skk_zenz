@@ -291,6 +291,22 @@ fn hiragana_to_katakana(value: &str) -> String {
         .collect()
 }
 
+pub(crate) fn convert_kana_script(value: &str, mode: KanaMode) -> String {
+    match mode {
+        KanaMode::Hiragana => value
+            .chars()
+            .map(|character| match character {
+                '\u{30a1}'..='\u{30f6}' => {
+                    char::from_u32(character as u32 - 0x60).expect("hiragana mapping is valid")
+                }
+                _ => character,
+            })
+            .collect(),
+        KanaMode::Katakana => hiragana_to_katakana(value),
+        KanaMode::HankakuKatakana => katakana_to_hankaku(&hiragana_to_katakana(value)),
+    }
+}
+
 fn katakana_to_hankaku(value: &str) -> String {
     value
         .chars()
@@ -461,5 +477,15 @@ mod tests {
         let rule = rule(&[("ga", "", "が")]);
         assert_eq!(rule.convert("ga", KanaMode::Katakana).output, "ガ");
         assert_eq!(rule.convert("ga", KanaMode::HankakuKatakana).output, "ｶﾞ");
+    }
+
+    #[test]
+    fn converts_existing_kana_between_input_modes() {
+        assert_eq!(convert_kana_script("かなー", KanaMode::Katakana), "カナー");
+        assert_eq!(convert_kana_script("カナー", KanaMode::Hiragana), "かなー");
+        assert_eq!(
+            convert_kana_script("かなー", KanaMode::HankakuKatakana),
+            "ｶﾅｰ"
+        );
     }
 }

@@ -20,6 +20,7 @@ pub struct FfiUpdate {
     candidates: *const FfiCandidate,
     candidate_count: usize,
     selected_candidate: usize,
+    input_mode: u8,
 }
 
 pub type UpdateCallback = unsafe extern "C" fn(*mut c_void, *const FfiUpdate);
@@ -64,6 +65,13 @@ fn with_update(update: &InputUpdate, user_data: *mut c_void, callback: UpdateCal
         candidates: candidates.as_ptr(),
         candidate_count: candidates.len(),
         selected_candidate: update.selected_candidate.unwrap_or(usize::MAX),
+        input_mode: match update.input_mode {
+            skk_zenz_backend::InputMode::Hiragana => 0,
+            skk_zenz_backend::InputMode::Katakana => 1,
+            skk_zenz_backend::InputMode::HankakuKatakana => 2,
+            skk_zenz_backend::InputMode::Latin => 3,
+            skk_zenz_backend::InputMode::WideLatin => 4,
+        },
     };
     // SAFETY: All pointers in ffi_update remain valid for the synchronous callback.
     unsafe { callback(user_data, &raw const ffi_update) };

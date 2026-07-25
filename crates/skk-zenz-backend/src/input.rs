@@ -8,6 +8,8 @@ pub enum InputMode {
     Hiragana,
     Katakana,
     HankakuKatakana,
+    Latin,
+    WideLatin,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -156,6 +158,9 @@ impl From<InputMode> for KanaMode {
             InputMode::Hiragana => Self::Hiragana,
             InputMode::Katakana => Self::Katakana,
             InputMode::HankakuKatakana => Self::HankakuKatakana,
+            InputMode::Latin | InputMode::WideLatin => {
+                unreachable!("Latin mode does not use rom-kana conversion")
+            }
         }
     }
 }
