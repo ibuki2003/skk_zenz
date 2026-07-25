@@ -85,6 +85,8 @@ okuri_nasi = ["from_user", "recency"]
 abbrev = ["from_user", "recency"]
 ```
 
+threadsでZenz評価のスレッド数を指定できます。作者環境では、候補**1文字**あたり、cpu time 100msで、threadsにほぼ比例して速くなるようです。マシン性能や消費電力と相談して設定してください。
+
 ユーザ辞書は同じディレクトリの`user.sqlite3`
 候補の使用頻度は時間とともに指数減衰し、`recency_half_life_days`で半減期を日数指定できます。
 候補順は`candidate_order`の各listへ優先順に`from_user`、`recency`、`ai_score`を指定します。
