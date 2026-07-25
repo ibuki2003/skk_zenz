@@ -70,7 +70,6 @@ impl Backend {
     }
 
     pub fn handle_event(&mut self, event: InputEvent) -> Result<InputUpdate> {
-        eprintln!("[BACKEND] event {event:?}");
         let prepare_speculatively = matches!(&event, InputEvent::Key(_));
         let (consumed, commit) = match event {
             InputEvent::SetContext(context) => {
@@ -107,7 +106,6 @@ impl Backend {
             commit,
             input_mode: self.input_state.mode,
         };
-        eprintln!("[BACKEND] event -> {update:?}");
         Ok(update)
     }
 
@@ -159,7 +157,13 @@ impl Backend {
                 .then_with(|| right.recency.cmp(&left.recency))
                 .then_with(|| left.loss.total_cmp(&right.loss))
         });
-        eprintln!("[BACKEND] lookup -> {candidates:?}");
+        eprint!("[BACKEND] lookup -> ");
+        for candidate in &candidates {
+            eprint!(
+                "{:?}({}, {:?}, {}) ",
+                candidate.output, candidate.loss, candidate.recency, candidate.use_count
+            );
+        }
         Ok(candidates)
     }
 
