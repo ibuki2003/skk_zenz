@@ -2,7 +2,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iomanip>
 #include <memory>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -146,6 +149,40 @@ std::string inputText(const fcitx::Key &key) {
     return text;
 }
 
+std::string uuidString(const fcitx::InputContext *inputContext) {
+    std::ostringstream stream;
+    stream << std::hex << std::setfill('0');
+    for (const auto byte : inputContext->uuid()) {
+        stream << std::setw(2) << static_cast<unsigned int>(byte);
+    }
+    return stream.str();
+}
+
+std::string leftOfCursor(const std::string &text, std::size_t cursor) {
+    auto iterator = text.begin();
+    for (std::size_t index = 0;
+         index < cursor && iterator != text.end(); ++index) {
+        const auto byte = static_cast<unsigned char>(*iterator);
+        iterator += byte < 0x80   ? 1
+                    : byte < 0xe0 ? 2
+                    : byte < 0xf0 ? 3
+                                  : 4;
+    }
+    return {text.begin(), iterator};
+}
+
+void popUtf8(std::string &text) {
+    if (text.empty()) {
+        return;
+    }
+    auto offset = text.size() - 1;
+    while (offset > 0 &&
+           (static_cast<unsigned char>(text[offset]) & 0xc0) == 0x80) {
+        --offset;
+    }
+    text.erase(offset);
+}
+
 class SkkZenzEngine final : public fcitx::InputMethodEngineV2 {
 public:
     explicit SkkZenzEngine(fcitx::Instance *instance)
@@ -154,7 +191,43 @@ public:
               backend_.store(
                   skk_zenz_backend_new(nullptr),
                   std::memory_order_release);
-          }) {}
+          }) {
+        eventHandlers_.emplace_back(instance_->watchEvent(
+            fcitx::EventType::InputContextKeyEvent,
+            fcitx::EventWatcherPhase::PostInputMethod,
+            [this](fcitx::Event &event) {
+                trackUnconsumedKey(
+                    static_cast<fcitx::KeyEvent &>(event));
+            }));
+        eventHandlers_.emplace_back(instance_->watchEvent(
+            fcitx::EventType::InputContextCommitString,
+            fcitx::EventWatcherPhase::Default,
+            [this](fcitx::Event &event) {
+                auto &commit =
+                    static_cast<fcitx::CommitStringEvent &>(event);
+                trackCommit(
+                    commit.inputContext(), commit.text(), std::nullopt);
+            }));
+        eventHandlers_.emplace_back(instance_->watchEvent(
+            fcitx::EventType::InputContextCommitStringWithCursor,
+            fcitx::EventWatcherPhase::Default,
+            [this](fcitx::Event &event) {
+                auto &commit =
+                    static_cast<fcitx::CommitStringWithCursorEvent &>(
+                        event);
+                trackCommit(
+                    commit.inputContext(), commit.text(),
+                    static_cast<std::size_t>(commit.cursor()));
+            }));
+        eventHandlers_.emplace_back(instance_->watchEvent(
+            fcitx::EventType::InputContextSurroundingTextUpdated,
+            fcitx::EventWatcherPhase::Default,
+            [this](fcitx::Event &event) {
+                auto &contextEvent =
+                    static_cast<fcitx::InputContextEvent &>(event);
+                trackSurroundingText(contextEvent.inputContext());
+            }));
+    }
 
     ~SkkZenzEngine() override {
         initializationThread_.join();
@@ -299,24 +372,71 @@ private:
         if (!backend) {
             return;
         }
+        switchContext(inputContext);
         const auto &surrounding = inputContext->surroundingText();
-        if (!surrounding.isValid()) {
+        if (surrounding.isValid()) {
+            trackedContext_ = leftOfCursor(
+                surrounding.text(),
+                static_cast<std::size_t>(surrounding.cursor()));
+        }
+        skk_zenz_backend_set_context(
+            backend, trackedContext_.c_str(), nullptr, discardUpdate);
+    }
+
+    void switchContext(fcitx::InputContext *inputContext) {
+        const auto uuid = uuidString(inputContext);
+        if (uuid == activeUuid_) {
             return;
         }
-        const auto &text = surrounding.text();
-        const auto cursor = static_cast<std::size_t>(surrounding.cursor());
-        auto iterator = text.begin();
-        for (std::size_t index = 0;
-             index < cursor && iterator != text.end(); ++index) {
-            const auto byte = static_cast<unsigned char>(*iterator);
-            iterator += byte < 0x80   ? 1
-                        : byte < 0xe0 ? 2
-                        : byte < 0xf0 ? 3
-                                      : 4;
+        activeUuid_ = uuid;
+        trackedContext_.clear();
+    }
+
+    void trackSurroundingText(fcitx::InputContext *inputContext) {
+        switchContext(inputContext);
+        const auto &surrounding = inputContext->surroundingText();
+        if (surrounding.isValid()) {
+            trackedContext_ = leftOfCursor(
+                surrounding.text(),
+                static_cast<std::size_t>(surrounding.cursor()));
         }
-        const std::string left(text.begin(), iterator);
-        skk_zenz_backend_set_context(
-            backend, left.c_str(), nullptr, discardUpdate);
+    }
+
+    void trackCommit(
+        fcitx::InputContext *inputContext, const std::string &text,
+        std::optional<std::size_t> cursor) {
+        if (text.empty()) {
+            return;
+        }
+        switchContext(inputContext);
+        trackedContext_ += cursor
+            ? leftOfCursor(text, *cursor)
+            : text;
+    }
+
+    void trackUnconsumedKey(fcitx::KeyEvent &event) {
+        if (event.accepted() || event.isRelease()) {
+            return;
+        }
+        switchContext(event.inputContext());
+        const auto &key = event.key();
+        if (key.isModifier()) {
+            return;
+        }
+        if (key.sym() == FcitxKey_BackSpace) {
+            popUtf8(trackedContext_);
+            return;
+        }
+        if (!key.hasModifier()) {
+            const auto text = fcitx::Key::keySymToUTF8(key.sym());
+            if (!text.empty() &&
+                static_cast<unsigned char>(text.front()) >= 0x20 &&
+                text.front() != '\x7f') {
+                trackedContext_ += text;
+                return;
+            }
+        }
+        trackedContext_.clear();
     }
 
     void focusOut(fcitx::InputContext *inputContext) {
@@ -374,6 +494,11 @@ private:
     fcitx::Instance *instance_;
     std::atomic<SkkZenzBackend *> backend_{nullptr};
     std::thread initializationThread_;
+    std::vector<std::unique_ptr<
+        fcitx::HandlerTableEntry<fcitx::EventHandler>>>
+        eventHandlers_;
+    std::string activeUuid_;
+    std::string trackedContext_;
     std::size_t candidateCount_ = 0;
     std::size_t candidatePageOffset_ = 0;
     std::uint8_t lastInputMode_ = 0;
