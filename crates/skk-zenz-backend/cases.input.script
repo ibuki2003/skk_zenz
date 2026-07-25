@@ -7,7 +7,49 @@ key a a -
 key SPC space -
 key - Return -
 
-# focus-out時は未確定入力をcommitして状態を破棄する。
+# focus-out時は未確定入力を破棄する。
 key K k shift
 key a a -
-focus-out commit
+focus-out reset
+
+# S-K S-A: 未確定のkがあるため、送りを開始せず「か」にする。
+key K k shift
+key A a shift
+reset
+
+# KINI: 確定かなの後だけ送りを開始し、母音入力時点で「き+に」を検索する。
+key K k shift
+key I i shift
+key N n shift
+key I i shift
+reset
+
+# 候補commitの契機になったnを捨てず、「車nい」ではなく「車に」にする。
+key K k shift
+key u u -
+key r r -
+key u u -
+key m m -
+key a a -
+key SPC space -
+key n n -
+key i i -
+reset
+
+# preedit中のBS/Returnとmodifier単押しを文字列としてappendしない。
+key K k shift
+key a a -
+key - Shift_L shift
+key - Control_L control
+key - BackSpace -
+key - Return -
+reset
+
+# 先頭候補でxを押すと見出し入力へ戻る。
+key K k shift
+key a a -
+key n n -
+key a a -
+key SPC space -
+key x x -
+reset

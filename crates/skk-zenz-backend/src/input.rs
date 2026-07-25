@@ -24,6 +24,7 @@ pub struct InputUpdate {
     pub consumed: bool,
     pub preedit: String,
     pub candidates: Vec<Candidate>,
+    pub selected_candidate: Option<usize>,
     pub commit: Option<String>,
     pub input_mode: InputMode,
 }
@@ -91,6 +92,13 @@ impl InputState {
         }
     }
 
+    pub(crate) fn selected_candidate(&self) -> Option<usize> {
+        match &self.phase {
+            Phase::Selecting { cursor, .. } => Some(*cursor),
+            _ => None,
+        }
+    }
+
     pub(crate) fn speculative_input(&self) -> Option<String> {
         match &self.phase {
             Phase::Preedit { stem, .. } if !stem.output.is_empty() => Some(stem.output.clone()),
@@ -136,6 +144,10 @@ impl Composition {
     pub(crate) fn has_output(&self) -> bool {
         !self.output.is_empty()
     }
+
+    pub(crate) fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
 }
 
 impl From<InputMode> for KanaMode {
@@ -165,8 +177,12 @@ mod tests {
         let mut composition = Composition::default();
         composition.push(&rule, "k", KanaMode::Hiragana);
         assert_eq!(composition.display(), "k");
+        assert!(!composition.has_output());
+        assert!(composition.has_pending());
         composition.push(&rule, "a", KanaMode::Hiragana);
         assert_eq!(composition.display(), "か");
+        assert!(composition.has_output());
+        assert!(!composition.has_pending());
     }
 
     #[test]

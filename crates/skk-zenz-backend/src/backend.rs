@@ -57,7 +57,10 @@ impl Backend {
     }
 
     pub fn prepare(&mut self, context: &str, input: &str) -> Result<Score> {
-        self.scorer.prepare(context, input)
+        eprintln!("[BACKEND] prepare context={context:?} input={input:?}");
+        let result = self.scorer.prepare(context, input);
+        eprintln!("[BACKEND] prepare -> {result:?}");
+        result
     }
 
     pub fn convert_romaji(&self, input: &str, mode: KanaMode) -> KanaConversion {
@@ -65,6 +68,8 @@ impl Backend {
     }
 
     pub fn handle_event(&mut self, event: InputEvent) -> Result<InputUpdate> {
+        eprintln!("[BACKEND] event {event:?}");
+        let prepare_speculatively = matches!(&event, InputEvent::Key(_));
         let (consumed, commit) = match event {
             InputEvent::SetContext(context) => {
                 self.input_state.context = context;
@@ -85,19 +90,23 @@ impl Backend {
             }
             InputEvent::Key(event) => self.handle_key(event)?,
         };
-        if commit.is_none()
+        if prepare_speculatively
+            && commit.is_none()
             && let Some(input) = self.input_state.speculative_input()
         {
             let context = self.input_state.context.clone();
             self.prepare(&context, &input)?;
         }
-        Ok(InputUpdate {
+        let update = InputUpdate {
             consumed,
             preedit: self.input_state.preedit(),
             candidates: self.input_state.candidates(),
+            selected_candidate: self.input_state.selected_candidate(),
             commit,
             input_mode: self.input_state.mode,
-        })
+        };
+        eprintln!("[BACKEND] event -> {update:?}");
+        Ok(update)
     }
 
     pub fn lookup(
@@ -106,6 +115,7 @@ impl Backend {
         input: &str,
         okuri: Option<&str>,
     ) -> Result<Vec<Candidate>> {
+        eprintln!("[BACKEND] lookup context={context:?} input={input:?} okuri={okuri:?}");
         let mut dictionary_candidates = self.user_dictionary.lookup(input, okuri)?;
         for dictionary in &self.system_dictionaries {
             dictionary_candidates.extend(dictionary.lookup(input, okuri)?);
@@ -147,6 +157,7 @@ impl Backend {
                 .then_with(|| right.recency.cmp(&left.recency))
                 .then_with(|| left.loss.total_cmp(&right.loss))
         });
+        eprintln!("[BACKEND] lookup -> {candidates:?}");
         Ok(candidates)
     }
 
@@ -325,7 +336,7 @@ impl Backend {
             self.input_state.phase = Phase::Preedit { stem, okuri };
             return Ok((false, None));
         };
-        if okuri.is_none() && is_preedit_start(&event) && !stem.display().is_empty() {
+        if okuri.is_none() && should_start_okuri(&event, &stem) {
             let mut value = Composition::default();
             value.push(
                 &self.rom_kana_rule,
@@ -338,9 +349,22 @@ impl Backend {
                 return self.start_lookup(stem, okuri);
             }
         } else if let Some(okuri) = &mut okuri {
-            okuri.push(&self.rom_kana_rule, text, self.input_state.mode.into());
+            let text = if is_preedit_start(&event) {
+                text.to_ascii_lowercase()
+            } else {
+                text.to_owned()
+            };
+            okuri.push(&self.rom_kana_rule, &text, self.input_state.mode.into());
+            if okuri.has_output() {
+                return self.start_lookup(stem, Some(okuri.clone()));
+            }
         } else {
-            stem.push(&self.rom_kana_rule, text, self.input_state.mode.into());
+            let text = if is_preedit_start(&event) {
+                text.to_ascii_lowercase()
+            } else {
+                text.to_owned()
+            };
+            stem.push(&self.rom_kana_rule, &text, self.input_state.mode.into());
         }
         self.input_state.phase = Phase::Preedit { stem, okuri };
         Ok((true, None))
@@ -349,7 +373,7 @@ impl Backend {
     #[allow(clippy::too_many_arguments)]
     fn handle_selecting(
         &mut self,
-        _event: KeyEvent,
+        event: KeyEvent,
         command: Option<&str>,
         input: String,
         okuri: Option<String>,
@@ -363,7 +387,14 @@ impl Backend {
                 }
             }
             Some("previous-candidate") => {
-                cursor = cursor.saturating_sub(1);
+                let Some(previous) = previous_candidate(cursor) else {
+                    self.input_state.phase = Phase::Preedit {
+                        stem: Composition::from_output(input),
+                        okuri: okuri.map(Composition::from_output),
+                    };
+                    return Ok((true, None));
+                };
+                cursor = previous;
             }
             Some("abort") => {
                 self.input_state.phase = Phase::Preedit {
@@ -379,13 +410,35 @@ impl Backend {
                     cursor = cursor.min(candidates.len().saturating_sub(1));
                 }
             }
-            Some("commit") | Some("commit-unhandled") | None => {
+            Some("commit") | Some("commit-unhandled") => {
                 if let Some(candidate) = candidates.get(cursor).cloned() {
                     self.select(&candidate)?;
                     self.input_state.context.push_str(&candidate.output);
                     self.input_state.phase = Phase::Direct;
                     return Ok((command == Some("commit"), Some(candidate.output)));
                 }
+            }
+            None if should_commit_selection_for_event(&event) => {
+                if let Some(candidate) = candidates.get(cursor).cloned() {
+                    self.select(&candidate)?;
+                    self.input_state.context.push_str(&candidate.output);
+                    self.input_state.phase = Phase::Direct;
+                    let (_, following_commit) = self.handle_direct(event, None)?;
+                    let mut commit = candidate.output;
+                    if let Some(following_commit) = following_commit {
+                        commit.push_str(&following_commit);
+                    }
+                    return Ok((true, Some(commit)));
+                }
+            }
+            None => {
+                self.input_state.phase = Phase::Selecting {
+                    input,
+                    okuri,
+                    candidates,
+                    cursor,
+                };
+                return Ok((false, None));
             }
             _ => {}
         }
@@ -465,6 +518,18 @@ fn is_preedit_start(event: &KeyEvent) -> bool {
             .is_some_and(|text| text.len() == 1 && text.as_bytes()[0].is_ascii_uppercase())
 }
 
+fn should_start_okuri(event: &KeyEvent, stem: &Composition) -> bool {
+    is_preedit_start(event) && stem.has_output() && !stem.has_pending()
+}
+
+fn previous_candidate(cursor: usize) -> Option<usize> {
+    cursor.checked_sub(1)
+}
+
+fn should_commit_selection_for_event(event: &KeyEvent) -> bool {
+    event.text.is_some()
+}
+
 fn composition_output(
     rule: &RomKanaRule,
     mode: InputMode,
@@ -515,5 +580,53 @@ impl From<&Candidate> for DictionaryCandidate {
             source: candidate.source,
             use_count: candidate.use_count,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    fn rule() -> RomKanaRule {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-data/rules");
+        RomKanaRule::load("base", &[root]).unwrap()
+    }
+
+    #[test]
+    fn shifted_vowel_completes_pending_stem_instead_of_starting_okuri() {
+        let rule = rule();
+        let event = KeyEvent::character("A", 'a', Modifiers::SHIFT);
+        let mut stem = Composition::default();
+        stem.push(&rule, "k", KanaMode::Hiragana);
+        assert!(!should_start_okuri(&event, &stem));
+
+        stem.push(&rule, "a", KanaMode::Hiragana);
+        assert_eq!(stem.display(), "か");
+        assert!(should_start_okuri(&event, &stem));
+
+        stem.push(&rule, "k", KanaMode::Hiragana);
+        assert_eq!(stem.display(), "かk");
+        assert!(!should_start_okuri(&event, &stem));
+    }
+
+    #[test]
+    fn first_previous_candidate_returns_to_preedit() {
+        assert_eq!(previous_candidate(0), None);
+        assert_eq!(previous_candidate(2), Some(1));
+    }
+
+    #[test]
+    fn printable_key_commits_selection_but_modifier_does_not() {
+        assert!(should_commit_selection_for_event(&KeyEvent::character(
+            "n",
+            'n',
+            Modifiers::empty()
+        )));
+        assert!(!should_commit_selection_for_event(&KeyEvent::named(
+            "Shift_L",
+            Modifiers::SHIFT
+        )));
     }
 }

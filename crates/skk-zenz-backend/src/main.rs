@@ -238,6 +238,8 @@ fn parse_modifiers(value: &str) -> Result<Modifiers> {
 mod input_tests {
     use super::*;
 
+    const INPUT_CASES: &str = include_str!("../cases.input.script");
+
     #[test]
     fn parses_shifted_text_and_unmodified_base_separately() {
         assert_eq!(
@@ -248,5 +250,29 @@ mod input_tests {
                 modifiers: Modifiers::SHIFT
             }
         );
+    }
+
+    #[test]
+    fn bundled_input_cases_have_valid_commands_and_keys() {
+        for (index, line) in INPUT_CASES.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (command, argument) = line.split_once(' ').unwrap_or((line, ""));
+            match command {
+                "key" => {
+                    parse_key_event(argument)
+                        .unwrap_or_else(|error| panic!("line {}: {error:#}", index + 1));
+                }
+                "context" | "reset" => {}
+                "focus-out" => assert!(
+                    matches!(argument, "commit" | "reset"),
+                    "line {}: invalid focus-out argument",
+                    index + 1
+                ),
+                other => panic!("line {}: unknown command {other:?}", index + 1),
+            }
+        }
     }
 }
