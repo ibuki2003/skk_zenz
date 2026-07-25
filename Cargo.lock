@@ -493,6 +493,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "iconv-native"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93a1156e71e53be4dff168b017c6483f579968c578577184eebb33d164c0f02c"
+dependencies = [
+ "cfg-if",
+ "vcpkg",
+ "web-sys",
+ "widestring",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "icu_collections"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1112,6 +1125,7 @@ dependencies = [
  "clap",
  "encoding_rs",
  "hf-hub",
+ "iconv-native",
  "llama-cpp-2",
  "rusqlite",
  "self_cell",
@@ -1458,6 +1472,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "web-sys"
+version = "0.3.103"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8622dcb61c0bcc9fffa6938bed81210af2da9a7e4a1a834b2e37a59b6dfb6141"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "web-time"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1484,6 +1508,12 @@ checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
 dependencies = [
  "rustls-pki-types",
 ]
+
+[[package]]
+name = "widestring"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "winapi"

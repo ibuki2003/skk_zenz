@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use encoding_rs::EUC_JP;
+use iconv_native::decode;
 
 use super::Dictionary;
 use crate::candidate::{CandidateSource, DictionaryCandidate};
@@ -26,19 +27,9 @@ impl SkkFileDictionary {
     pub(crate) fn load(path: &Path) -> Result<Self> {
         let bytes = fs::read(path)
             .with_context(|| format!("system辞書を読めません: {}", path.display()))?;
-        let contents = match std::str::from_utf8(&bytes) {
-            Ok(contents) => contents.to_owned(),
-            Err(_) => {
-                let (contents, _, malformed) = EUC_JP.decode(&bytes);
-                if malformed {
-                    bail!(
-                        "system辞書をUTF-8/EUC-JPとして解釈できません: {}",
-                        path.display()
-                    );
-                }
-                contents.into_owned()
-            }
-        };
+        let contents = decode_dictionary(&bytes).with_context(|| {
+            format!("system辞書の文字コードを変換できません: {}", path.display())
+        })?;
         Self::parse(path.to_owned(), &contents)
     }
 
@@ -77,6 +68,30 @@ impl SkkFileDictionary {
         }
         Ok(dictionary)
     }
+}
+
+fn decode_dictionary(bytes: &[u8]) -> Result<String> {
+    if let Ok(contents) = std::str::from_utf8(bytes) {
+        return Ok(contents.to_owned());
+    }
+    if declares_euc_jis_2004(bytes) {
+        return decode(bytes, "EUC-JISX0213")
+            .map_err(|error| anyhow::anyhow!("EUC-JIS-2004として解釈できません: {error}"));
+    }
+    let (contents, _, malformed) = EUC_JP.decode(bytes);
+    if malformed {
+        bail!("UTF-8/EUC-JPとして解釈できません");
+    }
+    Ok(contents.into_owned())
+}
+
+fn declares_euc_jis_2004(bytes: &[u8]) -> bool {
+    const DECLARATION: &[u8] = b"coding: euc-jis-2004";
+    bytes.get(..bytes.len().min(1024)).is_some_and(|header| {
+        header
+            .windows(DECLARATION.len())
+            .any(|part| part == DECLARATION)
+    })
 }
 
 impl Dictionary for SkkFileDictionary {
@@ -139,5 +154,14 @@ mod tests {
             dictionary.okuri_nasi["かな"][0].annotation.as_deref(),
             Some("注釈")
         );
+    }
+
+    #[test]
+    fn decodes_euc_jis_2004_dictionary() {
+        let bytes = b";; -*- coding: euc-jis-2004 -*-\n\
+            ;; okuri-nasi entries.\n\
+            \xa4\xc4\xa4\xc5\xa4\xe9 /\xfb\xc9\xc0\xee/\n";
+        let contents = decode_dictionary(bytes).unwrap();
+        assert!(contents.contains("つづら /𧃴川/"));
     }
 }
