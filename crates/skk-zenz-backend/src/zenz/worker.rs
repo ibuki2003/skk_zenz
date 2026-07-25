@@ -30,6 +30,10 @@ enum WorkerCommand {
         input: String,
         response: SyncSender<Result<Score, String>>,
     },
+    PrepareSpeculatively {
+        context: String,
+        input: String,
+    },
     Rerank {
         generation: u64,
         context: String,
@@ -99,6 +103,13 @@ impl ZenzWorker {
             })
             .context("AI評価workerへprepare要求を送信できません")?;
         receive_response(receiver, "prepare")
+    }
+
+    pub(crate) fn prepare_speculatively(&self, context: &str, input: &str) {
+        let _ = self.commands.send(WorkerCommand::PrepareSpeculatively {
+            context: context.to_owned(),
+            input: input.to_owned(),
+        });
     }
 
     pub(crate) fn rerank(
@@ -178,6 +189,33 @@ fn run_worker(
                     .prepare(&context, &input)
                     .map_err(|error| format!("{error:#}"));
                 let _ = response.send(result);
+            }
+            WorkerCommand::PrepareSpeculatively {
+                mut context,
+                mut input,
+            } => {
+                let mut superseded = false;
+                loop {
+                    match commands.try_recv() {
+                        Ok(WorkerCommand::PrepareSpeculatively {
+                            context: newer_context,
+                            input: newer_input,
+                        }) => {
+                            context = newer_context;
+                            input = newer_input;
+                        }
+                        Ok(command) => {
+                            pending = Some(command);
+                            superseded = true;
+                            break;
+                        }
+                        Err(TryRecvError::Disconnected) => return,
+                        Err(TryRecvError::Empty) => break,
+                    }
+                }
+                if !superseded && let Err(error) = scorer.prepare(&context, &input) {
+                    eprintln!("speculative prepare failed: {error:#}");
+                }
             }
             WorkerCommand::Rerank {
                 generation,

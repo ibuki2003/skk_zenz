@@ -127,8 +127,8 @@ impl Backend {
             && self.current_order_uses_ai_score()
             && let Some(input) = self.input_state.speculative_input()
         {
-            let context = self.input_state.context.clone();
-            self.prepare(&context, &input)?;
+            self.scorer
+                .prepare_speculatively(&self.input_state.context, &input);
         }
         Ok(self.input_update(consumed, commit))
     }
