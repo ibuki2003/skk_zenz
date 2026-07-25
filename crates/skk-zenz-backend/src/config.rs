@@ -122,7 +122,7 @@ fn rule_search_paths(config_dir: &Path) -> Result<Vec<PathBuf>> {
         .context("設定ディレクトリの親がありません")?
         .join("libskk/rules");
     let mut paths = vec![config_dir.join("rules"), libskk_config];
-    paths.extend(env!("LIBSKK_DATA_PATH").split(':').map(PathBuf::from));
+    paths.extend(env!("SKK_RULES_PATH").split(':').map(PathBuf::from));
     Ok(paths)
 }
 

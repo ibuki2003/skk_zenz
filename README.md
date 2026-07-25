@@ -83,8 +83,8 @@ system辞書は`~/.config/skk-zenz/dictionary_list`へ1行1ファイルで指定
 
 このファイルがない場合は `$XDG_DATA_HOME/fcitx5/skk/dictionary_list`を代わりに使用します
 
-rom-kana ruleは、`~/.config/skk-zenz/rules`のほか、`~/.config/libskk/rules`とコンパイル時の`LIBSKK_DATA_PATH`も探索対象とします
-(コンパイル時に`LIBSKK_DATA_PATH`がなければ`/usr/share/libskk/rules`を使用します)
+rom-kana ruleは、`~/.config/skk-zenz/rules`のほか、`~/.config/libskk/rules`とコンパイル時の`SKK_RULES_PATH`も探索対象とします
+(コンパイル時に`SKK_RULES_PATH`がなければ`/usr/share/libskk/rules`を使用します)
 
 ## build
 
