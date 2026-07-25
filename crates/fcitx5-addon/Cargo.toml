@@ -1,0 +1,8 @@
+[package]
+name = "skk-zenz-fcitx5"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib"]

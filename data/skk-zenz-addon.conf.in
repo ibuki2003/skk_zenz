@@ -1,0 +1,8 @@
+[Addon]
+Name=SKK Zenz
+Category=InputMethod
+Version=@PROJECT_VERSION@
+Library=skk-zenz
+Type=SharedLibrary
+OnDemand=True
+Configurable=False
