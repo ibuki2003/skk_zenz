@@ -220,7 +220,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(file.model_path, Some(PathBuf::from("models/model.gguf")));
-        assert_eq!(file.huggingface, None);
+        assert_eq!(file.huggingface, default_huggingface_model());
         assert_eq!(file.context_size, 1024);
         assert_eq!(file.gpu_layers, 999);
         assert_eq!(file.rom_kana_rule, "default");
