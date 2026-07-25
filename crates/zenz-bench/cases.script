@@ -1,0 +1,17 @@
+# context は状態を破棄して新しいグループを開始する。
+# input は現在の未確定入力全体を置き換える。
+# 連続する eval は同じ context/input に対する候補として評価する。
+
+context 朝起きて窓を開けました。
+input きょう
+input きょうはいい
+input きょうはいいてんきです
+eval 今日はいい天気です
+eval 京は良い転機です
+eval 今日は良い天気です
+
+context 食事の前に手を合わせて、
+input はし
+input はしをもつ
+eval 箸を持つ
+eval 橋を持つ

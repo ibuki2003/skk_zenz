@@ -81,8 +81,10 @@ fn apply_key(context: &mut String, is_backspace: bool, append: &str) -> Guess {
 
 /// Records a key before the active input method has a chance to consume it.
 ///
-/// `uuid` and `key` must point to NUL-terminated strings for the duration of
-/// this call.
+/// # Safety
+///
+/// `uuid` and `key` must be valid pointers to NUL-terminated strings that
+/// remain alive and unchanged for the duration of this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn skk_zenz_log_key(uuid: *const c_char, key: *const c_char, release: bool) {
     // SAFETY: The C++ adapter guarantees valid pointers for this call.
@@ -102,6 +104,11 @@ pub unsafe extern "C" fn skk_zenz_log_key(uuid: *const c_char, key: *const c_cha
 /// Filtered keys never reach this function; accepted keys are excluded by the
 /// adapter. `append` is empty when the key cannot safely be interpreted as one
 /// printable character.
+///
+/// # Safety
+///
+/// `uuid` and `append` must be valid pointers to NUL-terminated strings that
+/// remain alive and unchanged for the duration of this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn skk_zenz_handle_unconsumed_key(
     uuid: *const c_char,
@@ -157,6 +164,11 @@ fn committed_left(text: &str, cursor: Option<u32>) -> &str {
 /// An empty commit is the surrounding-text workaround and intentionally has
 /// no effect. For commit-with-cursor, only the part before the resulting cursor
 /// belongs to the left context.
+///
+/// # Safety
+///
+/// `uuid` and `text` must be valid pointers to NUL-terminated strings that
+/// remain alive and unchanged for the duration of this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn skk_zenz_handle_commit(
     uuid: *const c_char,
@@ -195,8 +207,10 @@ fn split_at_char(text: &str, cursor: u32) -> (&str, &str) {
 
 /// Records surrounding text and, when valid, replaces the context for its UUID.
 ///
-/// `uuid` and `text` must point to NUL-terminated strings for the duration of
-/// this call.
+/// # Safety
+///
+/// `uuid` and `text` must be valid pointers to NUL-terminated strings that
+/// remain alive and unchanged for the duration of this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn skk_zenz_handle_surrounding_text(
     uuid: *const c_char,

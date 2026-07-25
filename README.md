@@ -24,9 +24,28 @@ SKKを現代的にしたいな!というモチベでPoCを作ってみます
 
 - [x] fcitx5のIMの仮実装
   - 左文脈の取得の可否を実験する
-- [ ] zenzの組み込み、ランタイムとハードウェアごとのレイテンシを確認
+- [x] zenzの組み込み、ランタイムとハードウェアごとのレイテンシを確認
   - space押下前から投機実行できるといいのですが…
-- [ ] backend, frontendの実装
+- [ ] backendの実装
+  - [x] `skk-zenz-backend`を通常のCargo依存として提供する
+  - [x] SKK system辞書をbackendで読み込み、送りあり・送りなし候補を検索する
+  - [x] SQLite user辞書へ登録・選択・削除・使用回数を保存する
+  - [x] 永続化しないrecencyを候補順位へ反映する
+  - [x] zenzで候補をスコアリングし、user辞書・recency・lossで並べる
+  - [x] `prepare(context, input)`で変換前にKV cacheを投機更新する
+  - [x] `lookup(context, input, okuri)`を提供する
+  - [x] backendのコア機能を試せるCLIを提供する
+  - [x] TOML設定ファイルからモデル・辞書・推論設定を読み込む
+  - [ ] 後回し: statelessなローマ字・かな変換API
+  - [ ] 後回し: 数値変換、辞書内Lisp式などの特殊変換
+  - [ ] 後回し: `complete()`による見出し補完
+  - [ ] 後回し: skkserv、CDB辞書
+  - [ ] 後回し: system/user辞書の自動reload監視
+  - [ ] 後回し: モデルの自動ダウンロード
+  - [ ] 後回し: 複数候補のバッチスコアリング最適化
+- [ ] frontendの実装
+  - [ ] fcitx5固有のキーイベント、preedit、候補UIを実装する
+  - [ ] backendの`prepare`を入力中、`lookup`を変換開始時に呼び出す
 - [ ] 性能検証 (暇があればね)
   - 適当なテキストを用意して、オリジナル実装とのspace押下回数とか比較するんかな? 知らんけど
 
@@ -62,3 +81,86 @@ fcitx5 -rd
 `[SURROUNDING]`、推測文脈のappend/pop/flush/replaceをgreenの `[GUESSED]` として
 記録します（端末以外への出力または `NO_COLOR` 設定時は色なし）。各行の `ts_ms`
 はUnix epochからのミリ秒です。ウインドウを切り替えてもUUIDごとの推測値は保持します。
+
+## zenz inference benchmark
+
+`skk-zenz-bench` は zenz v3.2 xsmall/small の Q5_K_M GGUF を Hugging Face から
+ダウンロード・キャッシュし、入力中にKV cacheを更新する `speculative` と変換開始時に
+初めて更新する `baseline` を比較します。既知の出力はteacher-forcingでloss
+（出力トークンの負の対数尤度）を算出します。
+
+```console
+cargo run --release -p skk-zenz-bench -- --model both
+```
+
+既定の操作列は `crates/zenz-bench/cases.script` にあります。各行を最初の空白で
+コマンドと値に分割し、値は残りをそのまま使用します。
+
+```text
+context 朝起きて窓を開けました。
+input きょう
+input きょうはいいてんきです
+eval 今日はいい天気です
+eval 京は良い転機です
+```
+
+`context` はKV cacheを破棄してグループを開始し、`input` は未確定入力全体を置き換え、
+`eval` は現在のcontext/inputに対して出力を評価します。同じ形式のファイルを
+`--script` で指定でき、`--runs` 回スクリプト全体を再生して各行と全体の統計を表示します。
+
+```console
+cargo run --release -p skk-zenz-bench -- \
+  --model small \
+  --script path/to/cases.script \
+  --runs 10
+```
+
+CUDA または Vulkan を使う場合は、それぞれ `--features cuda` または
+`--features vulkan` を追加します。ローカルの GGUF は `--model-path` で指定できます。
+
+## backend core CLI
+
+`skk-zenz-backend`はモデル、SKK system辞書、SQLite user辞書を読み込み、操作列で
+コア機能を確認できます。
+
+```console
+cargo run --release -p skk-zenz-backend -- --script path/to/backend.script
+```
+
+既定ではcwdの`skk-zenz.toml`を読みます。別の設定ファイルは`--config`で指定できます。
+設定内の相対パスは設定ファイルのあるディレクトリを基準に解決します。
+
+```toml
+model_path = "models/zenz-v3.2-xsmall-Q5_K_M.gguf"
+system_dictionaries = ["data/SKK-JISYO.L"]
+user_dictionary = "data/user.sqlite3"
+
+context_size = 1024
+# threads = 8
+gpu_layers = 999
+```
+
+`--script`を省略すると標準入力から操作列を読みます。各行は最初の空白でコマンドと値に
+分けます。
+
+```text
+context 食事の前に手を合わせて、
+input はし
+prepare
+lookup
+select 0
+lookup
+
+context 荷物を
+input おく
+prepare
+lookup る
+```
+
+- `context`: KV cacheを破棄して左文脈を設定
+- `input`: 現在の未確定入力全体を設定
+- `prepare`: 現在のcontext/inputまで投機実行
+- `lookup [okuri]`: 辞書候補を取得し、zenzでスコアリング
+- `select N`: 直前の候補Nを選択し、user辞書とrecencyを更新
+- `purge N`: 直前の候補Nをuser辞書から削除
+- `register TEXT`: 現在のinput/okuriへ候補を明示登録
