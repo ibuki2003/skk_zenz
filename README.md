@@ -20,6 +20,24 @@ SKKを現代的にしたいな!というモチベでPoCを作ってみます
 使いやすさに直結するはずで、要検証&調整。
 設定で変更できます。デフォルトでは、まずユーザ辞書にあるかどうかで二分し、okuri-ariのときはZenzによるソートを使用、それ以外ではfrequencyを使用。
 
+### 速度
+
+NNを動かすので、どうしても時間がかかります
+
+configのthreadsでZenz評価のスレッド数を指定できます。
+CPU評価のほか、Vulkanを使用してGPUやNPUで実行することもできます。(下のほう参照。)
+
+作者環境では、候補**1文字**あたり、
+- デスクトップPC:
+  - CPU: ~100ms (cpu time)
+  - GPU: ~6ms
+- ノートPC:
+  - CPU: ~180ms
+  - GPU: ~9ms
+
+CPUだとスレッド数が結構効きます
+マシン性能や消費電力と相談して設定してください。
+
 ## roadmap (todo)
 
 優先度順:
@@ -83,8 +101,6 @@ okuri_ari = ["from_user", "ai_score"]
 okuri_nasi = ["from_user", "recency"]
 abbrev = ["from_user", "recency"]
 ```
-
-threadsでZenz評価のスレッド数を指定できます。作者環境では、候補**1文字**あたり、cpu time 100msで、threadsにほぼ比例して速くなるようです。マシン性能や消費電力と相談して設定してください。
 
 ユーザ辞書は同じディレクトリの`user.sqlite3`
 候補の使用頻度は時間とともに指数減衰し、`recency_half_life_days`で半減期を日数指定できます。
