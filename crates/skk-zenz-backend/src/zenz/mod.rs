@@ -1,7 +1,12 @@
+mod config;
+mod model;
+mod model_resolver;
 mod prompt;
 mod scorer;
 mod worker;
 
-pub use scorer::{ModelSource, Score, ZenzConfig, ZenzScorer};
+pub use config::{ModelSource, ZenzConfig};
+pub(crate) use model_resolver::parse_huggingface_reference;
+pub use scorer::{Score, ZenzScorer};
 pub use worker::{ModelDownloadEvent, ModelDownloadEventHandler};
 pub(crate) use worker::{RerankUpdate, ZenzWorker};

@@ -32,69 +32,8 @@
 #include <fcitx-utils/event.h>
 #include <fcitx-utils/key.h>
 
-extern "C" {
-struct SkkZenzBackend;
-
-struct SkkZenzCandidate {
-    const char *text;
-    const char *annotation;
-};
-
-struct SkkZenzUpdate {
-    bool consumed;
-    const char *preedit;
-    const char *commit;
-    const SkkZenzCandidate *candidates;
-    std::size_t candidateCount;
-    std::size_t selectedCandidate;
-    std::uint8_t inputMode;
-    bool rerankPending;
-    std::size_t evaluatedCandidateCount;
-    std::size_t totalCandidateCount;
-    bool candidateWindowVisible;
-    std::size_t candidatePageStart;
-    std::size_t candidatePageSize;
-    bool showAnnotations;
-};
-
-using SkkZenzUpdateCallback =
-    void (*)(void *userData, const SkkZenzUpdate *update);
-using SkkZenzMessageCallback =
-    void (*)(void *userData, bool success, const char *message);
-using SkkZenzModelDownloadCallback =
-    void (*)(void *userData, std::uint8_t kind, const char *message);
-
-SkkZenzBackend *skk_zenz_backend_new(
-    const char *configPath, void *userData,
-    SkkZenzModelDownloadCallback callback);
-void skk_zenz_backend_free(SkkZenzBackend *backend);
-bool skk_zenz_backend_key(
-    SkkZenzBackend *backend, const char *text, const char *key,
-    std::uint16_t modifiers, void *userData, SkkZenzUpdateCallback callback);
-bool skk_zenz_backend_set_context(
-    SkkZenzBackend *backend, const char *context, void *userData,
-    SkkZenzUpdateCallback callback);
-bool skk_zenz_backend_focus_out(
-    SkkZenzBackend *backend, void *userData, SkkZenzUpdateCallback callback);
-bool skk_zenz_backend_reset(
-    SkkZenzBackend *backend, void *userData, SkkZenzUpdateCallback callback);
-bool skk_zenz_backend_set_input_mode(
-    SkkZenzBackend *backend, std::uint8_t mode, void *userData,
-    SkkZenzUpdateCallback callback);
-bool skk_zenz_backend_poll_rerank(
-    SkkZenzBackend *backend, void *userData,
-    SkkZenzUpdateCallback callback);
-int skk_zenz_backend_config_watch_fd(SkkZenzBackend *backend);
-bool skk_zenz_backend_reload_config_if_changed(
-    SkkZenzBackend *backend, void *userData,
-    SkkZenzMessageCallback callback);
-bool skk_zenz_backend_poll_model_reload(
-    SkkZenzBackend *backend, void *userData,
-    SkkZenzMessageCallback callback);
-bool skk_zenz_backend_select_candidate(
-    SkkZenzBackend *backend, std::size_t index, void *userData,
-    SkkZenzUpdateCallback callback);
-}
+#include "backend_ffi.h"
+#include "context_tracker.h"
 
 namespace {
 
@@ -181,40 +120,6 @@ std::string inputText(const fcitx::Key &key) {
         return {};
     }
     return text;
-}
-
-std::string uuidString(const fcitx::InputContext *inputContext) {
-    std::ostringstream stream;
-    stream << std::hex << std::setfill('0');
-    for (const auto byte : inputContext->uuid()) {
-        stream << std::setw(2) << static_cast<unsigned int>(byte);
-    }
-    return stream.str();
-}
-
-std::string leftOfCursor(const std::string &text, std::size_t cursor) {
-    auto iterator = text.begin();
-    for (std::size_t index = 0;
-         index < cursor && iterator != text.end(); ++index) {
-        const auto byte = static_cast<unsigned char>(*iterator);
-        iterator += byte < 0x80   ? 1
-                    : byte < 0xe0 ? 2
-                    : byte < 0xf0 ? 3
-                                  : 4;
-    }
-    return {text.begin(), iterator};
-}
-
-void popUtf8(std::string &text) {
-    if (text.empty()) {
-        return;
-    }
-    auto offset = text.size() - 1;
-    while (offset > 0 &&
-           (static_cast<unsigned char>(text[offset]) & 0xc0) == 0x80) {
-        --offset;
-    }
-    text.erase(offset);
 }
 
 struct InputModeStatus {
@@ -463,8 +368,8 @@ public:
             backendModifiers(rawKey.states()), &target, updateCallback);
         if (!event.accepted() && text.empty() && !rawKey.isModifier()) {
             if (rawKey.sym() == FcitxKey_BackSpace) {
-                auto context = trackedContext_;
-                popUtf8(context);
+                auto context = contextTracker_.context();
+                ContextTracker::popLastUtf8(context);
                 skk_zenz_backend_set_context(
                     backend, context.c_str(), nullptr, discardUpdate);
                 return;
@@ -728,71 +633,23 @@ private:
         if (!backend) {
             return;
         }
-        switchContext(inputContext);
-        const auto &surrounding = inputContext->surroundingText();
-        if (surrounding.isValid()) {
-            trackedContext_ = leftOfCursor(
-                surrounding.text(),
-                static_cast<std::size_t>(surrounding.cursor()));
-        }
+        contextTracker_.trackSurroundingText(inputContext);
         skk_zenz_backend_set_context(
-            backend, trackedContext_.c_str(), nullptr, discardUpdate);
-    }
-
-    void switchContext(fcitx::InputContext *inputContext) {
-        const auto uuid = uuidString(inputContext);
-        if (uuid == activeUuid_) {
-            return;
-        }
-        activeUuid_ = uuid;
-        trackedContext_.clear();
+            backend, contextTracker_.context().c_str(), nullptr, discardUpdate);
     }
 
     void trackSurroundingText(fcitx::InputContext *inputContext) {
-        switchContext(inputContext);
-        const auto &surrounding = inputContext->surroundingText();
-        if (surrounding.isValid()) {
-            trackedContext_ = leftOfCursor(
-                surrounding.text(),
-                static_cast<std::size_t>(surrounding.cursor()));
-        }
+        contextTracker_.trackSurroundingText(inputContext);
     }
 
     void trackCommit(
         fcitx::InputContext *inputContext, const std::string &text,
         std::optional<std::size_t> cursor) {
-        if (text.empty()) {
-            return;
-        }
-        switchContext(inputContext);
-        trackedContext_ += cursor
-            ? leftOfCursor(text, *cursor)
-            : text;
+        contextTracker_.trackCommit(inputContext, text, cursor);
     }
 
     void trackUnconsumedKey(fcitx::KeyEvent &event) {
-        if (event.accepted() || event.isRelease()) {
-            return;
-        }
-        switchContext(event.inputContext());
-        const auto &key = event.key();
-        if (key.isModifier()) {
-            return;
-        }
-        if (key.sym() == FcitxKey_BackSpace) {
-            popUtf8(trackedContext_);
-            return;
-        }
-        if (!key.hasModifier()) {
-            const auto text = fcitx::Key::keySymToUTF8(key.sym());
-            if (!text.empty() &&
-                static_cast<unsigned char>(text.front()) >= 0x20 &&
-                text.front() != '\x7f') {
-                trackedContext_ += text;
-                return;
-            }
-        }
-        trackedContext_.clear();
+        contextTracker_.trackUnconsumedKey(event);
     }
 
     void focusOut(fcitx::InputContext *inputContext) {
@@ -862,8 +719,7 @@ private:
     std::vector<std::unique_ptr<
         fcitx::HandlerTableEntry<fcitx::EventHandler>>>
         eventHandlers_;
-    std::string activeUuid_;
-    std::string trackedContext_;
+    ContextTracker contextTracker_;
     std::size_t candidateCount_ = 0;
     std::size_t candidatePageOffset_ = 0;
     bool candidateWindowVisible_ = false;

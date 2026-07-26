@@ -3,13 +3,11 @@ use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, anyhow};
-use hf_hub::api::sync::ApiBuilder;
-use hf_hub::{Cache, Repo};
 
 use crate::candidate::Candidate;
-use crate::config::parse_huggingface_reference;
 
-use super::{ModelSource, Score, ZenzConfig, ZenzScorer};
+use super::model_resolver::resolve_model;
+use super::{Score, ZenzConfig, ZenzScorer};
 
 pub(crate) const INITIAL_RERANK_COUNT: usize = 3;
 
@@ -314,50 +312,6 @@ fn run_worker(
                 let _ = updates.send(RerankUpdate::Finished { generation });
             }
             WorkerCommand::Shutdown => return,
-        }
-    }
-}
-
-fn resolve_model(
-    mut config: ZenzConfig,
-    model_events: &ModelDownloadEventHandler,
-) -> Result<ZenzConfig> {
-    let ModelSource::HuggingFace(reference) = &config.model else {
-        return Ok(config);
-    };
-    let reference = reference.clone();
-    let (repo_id, filename) = parse_huggingface_reference(&reference)?;
-    let repo = Repo::model(repo_id);
-    let cache = Cache::default();
-    if let Some(path) = cache.repo(repo.clone()).get(filename) {
-        config.model = ModelSource::Local(path);
-        return Ok(config);
-    }
-
-    model_events(ModelDownloadEvent::Started {
-        reference: reference.clone(),
-    });
-    let result = ApiBuilder::from_cache(cache)
-        .with_progress(false)
-        .build()
-        .context("Hugging Face API の初期化に失敗しました")
-        .and_then(|api| {
-            api.repo(repo)
-                .download(filename)
-                .with_context(|| format!("{reference} の取得に失敗しました"))
-        });
-    match result {
-        Ok(path) => {
-            model_events(ModelDownloadEvent::Completed { reference });
-            config.model = ModelSource::Local(path);
-            Ok(config)
-        }
-        Err(error) => {
-            model_events(ModelDownloadEvent::Failed {
-                reference,
-                error: format!("{error:#}"),
-            });
-            Err(error)
         }
     }
 }

@@ -4,10 +4,12 @@ mod config;
 mod config_watcher;
 mod dictionary;
 mod input;
+mod kana_script;
 mod keymap;
 mod numeric;
 mod okuri;
 mod rom_kana;
+mod rule_file;
 pub mod zenz;
 
 pub use backend::Backend;

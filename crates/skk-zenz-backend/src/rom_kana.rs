@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
 use serde_json::Value;
+
+pub(crate) use crate::kana_script::convert_kana_script;
+use crate::kana_script::{hiragana_to_katakana, katakana_to_hankaku};
+use crate::rule_file::RuleFileLoader;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum KanaMode {
@@ -34,39 +36,26 @@ struct Entry {
     hankaku_katakana: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct MapFile {
-    #[serde(default)]
-    include: Vec<String>,
-    #[serde(default)]
-    define: HashMap<String, HashMap<String, Value>>,
-}
-
-struct RuleLoader {
-    search_paths: Vec<PathBuf>,
-    entries: HashMap<String, Entry>,
-    loaded: HashSet<(String, String)>,
-    loading: HashSet<(String, String)>,
-}
-
 impl RomKanaRule {
     pub fn load(rule: &str, search_paths: &[PathBuf]) -> Result<Self> {
-        let mut loader = RuleLoader {
-            search_paths: search_paths.to_vec(),
-            entries: HashMap::new(),
-            loaded: HashSet::new(),
-            loading: HashSet::new(),
-        };
-        loader.load(rule, "default")?;
-        let prefixes = loader
-            .entries
+        let mut loader = RuleFileLoader::new(search_paths, "rom-kana", "rom-kana定義");
+        let mut entries = HashMap::new();
+        for rule_file in loader.load(rule, "default")? {
+            if let Some(definitions) = rule_file.define.get("rom-kana") {
+                for (romaji, value) in definitions {
+                    if value.is_null() {
+                        entries.remove(romaji);
+                    } else {
+                        entries.insert(romaji.clone(), parse_entry(romaji, value)?);
+                    }
+                }
+            }
+        }
+        let prefixes = entries
             .keys()
             .flat_map(|key| (1..=key.len()).map(|length| key[..length].to_owned()))
             .collect();
-        Ok(Self {
-            entries: loader.entries,
-            prefixes,
-        })
+        Ok(Self { entries, prefixes })
     }
 
     pub fn convert(&self, input: &str, mode: KanaMode) -> KanaConversion {
@@ -87,62 +76,6 @@ impl RomKanaRule {
             output: conversion.output,
             preedit: conversion.preedit,
         }
-    }
-}
-
-impl RuleLoader {
-    fn load(&mut self, rule: &str, name: &str) -> Result<()> {
-        let identity = (rule.to_owned(), name.to_owned());
-        if self.loaded.contains(&identity) {
-            return Ok(());
-        }
-        if !self.loading.insert(identity.clone()) {
-            bail!("rom-kana ruleのincludeが循環しています: {rule}/{name}");
-        }
-
-        let path = self.locate(rule, name)?;
-        let contents = fs::read_to_string(&path)
-            .with_context(|| format!("rom-kana定義を読めません: {}", path.display()))?;
-        let map_file: MapFile = serde_json::from_str(&contents)
-            .with_context(|| format!("rom-kana定義を解釈できません: {}", path.display()))?;
-
-        for include in map_file.include {
-            let (parent_rule, parent_name) = include
-                .split_once('/')
-                .map_or((rule, include.as_str()), |(rule, name)| (rule, name));
-            self.load(parent_rule, parent_name)?;
-        }
-        if let Some(definitions) = map_file.define.get("rom-kana") {
-            for (romaji, value) in definitions {
-                if value.is_null() {
-                    self.entries.remove(romaji);
-                } else {
-                    self.entries
-                        .insert(romaji.clone(), parse_entry(romaji, value)?);
-                }
-            }
-        }
-
-        self.loading.remove(&identity);
-        self.loaded.insert(identity);
-        Ok(())
-    }
-
-    fn locate(&self, rule: &str, name: &str) -> Result<PathBuf> {
-        self.search_paths
-            .iter()
-            .map(|root| {
-                root.join(rule)
-                    .join("rom-kana")
-                    .join(format!("{name}.json"))
-            })
-            .find(|path| path.is_file())
-            .with_context(|| {
-                format!(
-                    "rom-kana定義が見つかりません: {rule}/rom-kana/{name}.json (search_paths={:?})",
-                    self.search_paths
-                )
-            })
     }
 }
 
@@ -257,134 +190,6 @@ impl KanaMode {
             Self::HankakuKatakana => "ﾝ",
         }
     }
-}
-
-fn hiragana_to_katakana(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if ('ぁ'..='ゖ').contains(&character) {
-                char::from_u32(character as u32 + 0x60).expect("ひらがなの変換先は有効")
-            } else {
-                character
-            }
-        })
-        .collect()
-}
-
-pub(crate) fn convert_kana_script(value: &str, mode: KanaMode) -> String {
-    match mode {
-        KanaMode::Hiragana => value
-            .chars()
-            .map(|character| match character {
-                '\u{30a1}'..='\u{30f6}' => {
-                    char::from_u32(character as u32 - 0x60).expect("hiragana mapping is valid")
-                }
-                _ => character,
-            })
-            .collect(),
-        KanaMode::Katakana => hiragana_to_katakana(value),
-        KanaMode::HankakuKatakana => katakana_to_hankaku(&hiragana_to_katakana(value)),
-    }
-}
-
-fn katakana_to_hankaku(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            let converted = match character {
-                '。' => "｡",
-                '「' => "｢",
-                '」' => "｣",
-                '、' => "､",
-                '・' => "･",
-                'ヲ' => "ｦ",
-                'ァ' => "ｧ",
-                'ィ' => "ｨ",
-                'ゥ' => "ｩ",
-                'ェ' => "ｪ",
-                'ォ' => "ｫ",
-                'ャ' => "ｬ",
-                'ュ' => "ｭ",
-                'ョ' => "ｮ",
-                'ッ' => "ｯ",
-                'ー' => "ｰ",
-                'ア' => "ｱ",
-                'イ' => "ｲ",
-                'ウ' => "ｳ",
-                'エ' => "ｴ",
-                'オ' => "ｵ",
-                'カ' => "ｶ",
-                'キ' => "ｷ",
-                'ク' => "ｸ",
-                'ケ' => "ｹ",
-                'コ' => "ｺ",
-                'サ' => "ｻ",
-                'シ' => "ｼ",
-                'ス' => "ｽ",
-                'セ' => "ｾ",
-                'ソ' => "ｿ",
-                'タ' => "ﾀ",
-                'チ' => "ﾁ",
-                'ツ' => "ﾂ",
-                'テ' => "ﾃ",
-                'ト' => "ﾄ",
-                'ナ' => "ﾅ",
-                'ニ' => "ﾆ",
-                'ヌ' => "ﾇ",
-                'ネ' => "ﾈ",
-                'ノ' => "ﾉ",
-                'ハ' => "ﾊ",
-                'ヒ' => "ﾋ",
-                'フ' => "ﾌ",
-                'ヘ' => "ﾍ",
-                'ホ' => "ﾎ",
-                'マ' => "ﾏ",
-                'ミ' => "ﾐ",
-                'ム' => "ﾑ",
-                'メ' => "ﾒ",
-                'モ' => "ﾓ",
-                'ヤ' => "ﾔ",
-                'ユ' => "ﾕ",
-                'ヨ' => "ﾖ",
-                'ラ' => "ﾗ",
-                'リ' => "ﾘ",
-                'ル' => "ﾙ",
-                'レ' => "ﾚ",
-                'ロ' => "ﾛ",
-                'ワ' => "ﾜ",
-                'ン' => "ﾝ",
-                'ガ' => "ｶﾞ",
-                'ギ' => "ｷﾞ",
-                'グ' => "ｸﾞ",
-                'ゲ' => "ｹﾞ",
-                'ゴ' => "ｺﾞ",
-                'ザ' => "ｻﾞ",
-                'ジ' => "ｼﾞ",
-                'ズ' => "ｽﾞ",
-                'ゼ' => "ｾﾞ",
-                'ゾ' => "ｿﾞ",
-                'ダ' => "ﾀﾞ",
-                'ヂ' => "ﾁﾞ",
-                'ヅ' => "ﾂﾞ",
-                'デ' => "ﾃﾞ",
-                'ド' => "ﾄﾞ",
-                'バ' => "ﾊﾞ",
-                'ビ' => "ﾋﾞ",
-                'ブ' => "ﾌﾞ",
-                'ベ' => "ﾍﾞ",
-                'ボ' => "ﾎﾞ",
-                'パ' => "ﾊﾟ",
-                'ピ' => "ﾋﾟ",
-                'プ' => "ﾌﾟ",
-                'ペ' => "ﾍﾟ",
-                'ポ' => "ﾎﾟ",
-                'ヴ' => "ｳﾞ",
-                _ => return character.to_string(),
-            };
-            converted.to_owned()
-        })
-        .collect()
 }
 
 #[cfg(test)]

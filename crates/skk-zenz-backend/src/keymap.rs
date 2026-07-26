@@ -1,11 +1,14 @@
-use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use bitflags::bitflags;
-use serde::Deserialize;
-use serde_json::Value;
+
+use crate::rule_file::RuleFileLoader;
+
+mod parser;
+
+use parser::{Binding, parse_binding, parse_named_key};
 
 bitflags! {
     #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
@@ -54,27 +57,6 @@ pub struct Keymap {
     bindings: Vec<(Binding, String)>,
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-enum Binding {
-    Text(String),
-    Chord { key: Key, modifiers: Modifiers },
-}
-
-#[derive(Debug, Deserialize)]
-struct MapFile {
-    #[serde(default)]
-    include: Vec<String>,
-    #[serde(default)]
-    define: HashMap<String, HashMap<String, Value>>,
-}
-
-struct KeymapLoader {
-    search_paths: Vec<PathBuf>,
-    entries: HashMap<String, String>,
-    loaded: HashSet<(String, String)>,
-    loading: HashSet<(String, String)>,
-}
-
 impl KeyEvent {
     pub fn character(text: impl Into<String>, key: char, modifiers: Modifiers) -> Self {
         Self {
@@ -95,15 +77,23 @@ impl KeyEvent {
 
 impl Keymap {
     pub fn load(rule: &str, mode: &str, search_paths: &[PathBuf]) -> Result<Self> {
-        let mut loader = KeymapLoader {
-            search_paths: search_paths.to_vec(),
-            entries: HashMap::new(),
-            loaded: HashSet::new(),
-            loading: HashSet::new(),
-        };
-        loader.load(rule, mode)?;
-        let bindings = loader
-            .entries
+        let mut loader = RuleFileLoader::new(search_paths, "keymap", "keymap定義");
+        let mut entries = HashMap::new();
+        for rule_file in loader.load(rule, mode)? {
+            if let Some(definitions) = rule_file.define.get("keymap") {
+                for (key, value) in definitions {
+                    if value.is_null() {
+                        entries.remove(key);
+                    } else {
+                        let command = value.as_str().with_context(|| {
+                            format!("keymapの{key:?}は文字列またはnullが必要です")
+                        })?;
+                        entries.insert(key.clone(), command.to_owned());
+                    }
+                }
+            }
+        }
+        let bindings = entries
             .into_iter()
             .map(|(key, command)| Ok((parse_binding(&key)?, command)))
             .collect::<Result<_>>()?;
@@ -120,167 +110,6 @@ impl Keymap {
                     .filter(|(binding, _)| matches!(binding, Binding::Text(_))),
             )
             .find_map(|(binding, command)| matches(binding, event).then_some(command.as_str()))
-    }
-}
-
-impl KeymapLoader {
-    fn load(&mut self, rule: &str, name: &str) -> Result<()> {
-        let identity = (rule.to_owned(), name.to_owned());
-        if self.loaded.contains(&identity) {
-            return Ok(());
-        }
-        if !self.loading.insert(identity.clone()) {
-            bail!("keymapのincludeが循環しています: {rule}/{name}");
-        }
-        let path = self.locate(rule, name)?;
-        let contents = fs::read_to_string(&path)
-            .with_context(|| format!("keymap定義を読めません: {}", path.display()))?;
-        let map_file: MapFile = serde_json::from_str(&contents)
-            .with_context(|| format!("keymap定義を解釈できません: {}", path.display()))?;
-
-        for include in map_file.include {
-            let (parent_rule, parent_name) = include
-                .split_once('/')
-                .map_or((rule, include.as_str()), |(rule, name)| (rule, name));
-            self.load(parent_rule, parent_name)?;
-        }
-        if let Some(definitions) = map_file.define.get("keymap") {
-            for (key, value) in definitions {
-                if value.is_null() {
-                    self.entries.remove(key);
-                } else {
-                    let command = value
-                        .as_str()
-                        .with_context(|| format!("keymapの{key:?}は文字列またはnullが必要です"))?;
-                    self.entries.insert(key.clone(), command.to_owned());
-                }
-            }
-        }
-        self.loading.remove(&identity);
-        self.loaded.insert(identity);
-        Ok(())
-    }
-
-    fn locate(&self, rule: &str, name: &str) -> Result<PathBuf> {
-        self.search_paths
-            .iter()
-            .map(|root| root.join(rule).join("keymap").join(format!("{name}.json")))
-            .find(|path| path.is_file())
-            .with_context(|| {
-                format!(
-                    "keymap定義が見つかりません: {rule}/keymap/{name}.json (search_paths={:?})",
-                    self.search_paths
-                )
-            })
-    }
-}
-
-fn parse_binding(value: &str) -> Result<Binding> {
-    let control_key = match value {
-        "\u{8}" => Some(NamedKey::Backspace),
-        "\n" | "\r" => Some(NamedKey::Enter),
-        "\t" => Some(NamedKey::Tab),
-        _ => None,
-    };
-    if let Some(key) = control_key {
-        return Ok(Binding::Chord {
-            key: Key::Named(key),
-            modifiers: Modifiers::empty(),
-        });
-    }
-    if let Some(inner) = value
-        .strip_prefix('(')
-        .and_then(|value| value.strip_suffix(')'))
-    {
-        return parse_long_chord(inner);
-    }
-    let mut parts = value.split('-').peekable();
-    let mut modifiers = Modifiers::empty();
-    while let Some(part) = parts.peek().copied() {
-        let modifier = match part {
-            "S" => Modifiers::SHIFT,
-            "C" => Modifiers::CONTROL,
-            "A" => Modifiers::ALT,
-            "M" => Modifiers::META,
-            "G" => Modifiers::MOD5,
-            _ => break,
-        };
-        modifiers |= modifier;
-        parts.next();
-    }
-    if !modifiers.is_empty() {
-        let base = parts.collect::<Vec<_>>().join("-");
-        if base.is_empty() {
-            bail!("keybindの修飾キーの後にキーがありません: {value:?}");
-        }
-        return Ok(Binding::Chord {
-            key: parse_key(&base),
-            modifiers,
-        });
-    }
-    if value.chars().count() == 1 {
-        return Ok(Binding::Text(value.to_owned()));
-    }
-    Ok(Binding::Chord {
-        key: parse_key(value),
-        modifiers,
-    })
-}
-
-fn parse_long_chord(value: &str) -> Result<Binding> {
-    let mut parts = value.split_whitespace().peekable();
-    let mut modifiers = Modifiers::empty();
-    while let Some(part) = parts.peek().copied() {
-        let modifier = match part {
-            "shift" => Modifiers::SHIFT,
-            "control" => Modifiers::CONTROL,
-            "alt" => Modifiers::ALT,
-            "meta" => Modifiers::META,
-            "super" => Modifiers::SUPER,
-            "hyper" => Modifiers::HYPER,
-            _ => break,
-        };
-        modifiers |= modifier;
-        parts.next();
-    }
-    let base = parts.collect::<Vec<_>>().join(" ");
-    if base.is_empty() {
-        bail!("keybindにキーがありません: ({value})");
-    }
-    Ok(Binding::Chord {
-        key: parse_key(&base),
-        modifiers,
-    })
-}
-
-fn parse_key(value: &str) -> Key {
-    let mut characters = value.chars();
-    match (characters.next(), characters.next()) {
-        (Some(character), None) => Key::Character(normalize_base_character(character)),
-        _ => Key::Named(parse_named_key(value)),
-    }
-}
-
-fn parse_named_key(value: &str) -> NamedKey {
-    match value {
-        "BackSpace" | "Backspace" => NamedKey::Backspace,
-        "Return" | "Enter" => NamedKey::Enter,
-        "Escape" | "Esc" => NamedKey::Escape,
-        "Tab" => NamedKey::Tab,
-        "space" | "SPC" => NamedKey::Space,
-        "Left" => NamedKey::ArrowLeft,
-        "Right" => NamedKey::ArrowRight,
-        "Up" => NamedKey::ArrowUp,
-        "Down" => NamedKey::ArrowDown,
-        _ => NamedKey::Other(value.to_owned()),
-    }
-}
-
-fn normalize_base_character(character: char) -> char {
-    if character.is_ascii_alphabetic() {
-        character.to_ascii_lowercase()
-    } else {
-        character
     }
 }
 

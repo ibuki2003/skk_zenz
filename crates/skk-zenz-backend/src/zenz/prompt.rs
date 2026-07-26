@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::token::LlamaToken;
 
+use crate::kana_script::hiragana_to_katakana;
+
 pub(super) const OUTPUT_TAG: char = '\u{EE01}';
 const INPUT_TAG: char = '\u{EE00}';
 const CONTEXT_TAG: char = '\u{EE02}';
@@ -29,19 +31,6 @@ pub(super) fn prompt_tokens(
 fn suffix_chars(value: &str, max_chars: usize) -> String {
     let skip = value.chars().count().saturating_sub(max_chars);
     value.chars().skip(skip).collect()
-}
-
-fn hiragana_to_katakana(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if ('ぁ'..='ゖ').contains(&character) {
-                char::from_u32(character as u32 + 0x60).expect("ひらがなの変換先は有効")
-            } else {
-                character
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
