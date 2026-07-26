@@ -14,6 +14,24 @@ pub(super) fn upper_command_text(command: Option<&str>) -> Option<&str> {
         .filter(|text| !text.is_empty())
 }
 
+pub(super) fn command_for_rom_kana<'a>(
+    command: Option<&'a str>,
+    rule: &RomKanaRule,
+    mode: InputMode,
+) -> Option<&'a str> {
+    match upper_command_text(command) {
+        Some(text)
+            if !matches!(
+                mode,
+                InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana
+            ) || !rule.can_consume(text) =>
+        {
+            None
+        }
+        _ => command,
+    }
+}
+
 pub(super) fn input_text<'a>(event: &'a KeyEvent, command: Option<&'a str>) -> Option<&'a str> {
     upper_command_text(command).or(event.text.as_deref())
 }

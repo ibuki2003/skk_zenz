@@ -8,17 +8,20 @@ impl Backend {
             .get(&self.input_state.mode)
             .and_then(|keymap| keymap.lookup(&event))
             .map(str::to_owned);
-        if matches!(
+        let command = command_for_rom_kana(
             command.as_deref(),
-            Some("next-candidate" | "previous-candidate")
-        ) && let Some(active) = &mut self.active_rerank
+            &self.rom_kana_rule,
+            self.input_state.mode,
+        );
+        if matches!(command, Some("next-candidate" | "previous-candidate"))
+            && let Some(active) = &mut self.active_rerank
         {
             active.selection_touched = true;
         }
         if !self.input_state.registrations.is_empty()
             && matches!(self.input_state.phase, Phase::Direct)
         {
-            match command.as_deref() {
+            match command {
                 Some("abort") => return Ok(self.abort_registration()),
                 Some("delete") if self.input_state.direct_pending.is_empty() => {
                     return Ok(self.delete_registration_text());
@@ -26,32 +29,22 @@ impl Backend {
                 Some("commit" | "commit-unhandled")
                     if self.input_state.direct_pending.is_empty() =>
                 {
-                    return self.finish_registration(command.as_deref());
+                    return self.finish_registration(command);
                 }
                 _ => {}
             }
         }
         match std::mem::take(&mut self.input_state.phase) {
-            Phase::Direct => self.handle_direct(event, command.as_deref()),
-            Phase::Preedit { stem, okuri } => {
-                self.handle_preedit(event, command.as_deref(), stem, okuri)
-            }
-            Phase::Abbrev { input } => self.handle_abbrev(event, command.as_deref(), input),
+            Phase::Direct => self.handle_direct(event, command),
+            Phase::Preedit { stem, okuri } => self.handle_preedit(event, command, stem, okuri),
+            Phase::Abbrev { input } => self.handle_abbrev(event, command, input),
             Phase::Selecting {
                 input,
                 okuri,
                 candidates,
                 cursor,
                 origin,
-            } => self.handle_selecting(
-                event,
-                command.as_deref(),
-                input,
-                okuri,
-                candidates,
-                cursor,
-                origin,
-            ),
+            } => self.handle_selecting(event, command, input, okuri, candidates, cursor, origin),
         }
     }
 
@@ -573,6 +566,27 @@ mod tests {
         let mut stem = Composition::default();
         stem.push(&rule(), "ka", KanaMode::Hiragana);
         assert!(should_start_okuri(&event, Some("upper-;"), &stem));
+    }
+
+    #[test]
+    fn upper_command_requires_a_rom_kana_prefix() {
+        let rule = rule();
+        let event = KeyEvent::character(":", ':', Modifiers::SHIFT);
+
+        let invalid = command_for_rom_kana(Some("upper-;"), &rule, InputMode::Hiragana);
+        assert_eq!(invalid, None);
+        assert_eq!(input_text(&event, invalid), Some(":"));
+        assert!(!is_upper_input(&event, invalid));
+
+        let valid = command_for_rom_kana(Some("upper-k"), &rule, InputMode::Hiragana);
+        assert_eq!(valid, Some("upper-k"));
+        assert_eq!(input_text(&event, valid), Some("k"));
+        assert!(is_upper_input(&event, valid));
+
+        let latin = command_for_rom_kana(Some("upper-k"), &rule, InputMode::Latin);
+        assert_eq!(latin, None);
+        assert_eq!(input_text(&event, latin), Some(":"));
+        assert!(!is_upper_input(&event, latin));
     }
 
     #[test]

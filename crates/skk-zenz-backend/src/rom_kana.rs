@@ -77,6 +77,10 @@ impl RomKanaRule {
             preedit: conversion.preedit,
         }
     }
+
+    pub(crate) fn can_consume(&self, input: &str) -> bool {
+        self.prefixes.contains(input)
+    }
 }
 
 fn parse_entry(romaji: &str, value: &Value) -> Result<Entry> {
@@ -247,6 +251,14 @@ mod tests {
     fn retains_incomplete_preedit() {
         let rule = rule(&[("kya", "", "きゃ")]);
         assert_eq!(rule.convert("ky", KanaMode::Hiragana).preedit, "ky");
+    }
+
+    #[test]
+    fn reports_whether_input_can_start_a_conversion() {
+        let rule = rule(&[("ka", "", "か"), (";a", "", "ぁ")]);
+        assert!(rule.can_consume("k"));
+        assert!(rule.can_consume(";"));
+        assert!(!rule.can_consume(":"));
     }
 
     #[test]
