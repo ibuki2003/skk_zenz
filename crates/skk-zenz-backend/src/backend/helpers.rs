@@ -59,6 +59,10 @@ pub(super) fn supports_abbrev(mode: InputMode) -> bool {
     )
 }
 
+pub(super) fn should_start_abbrev(command: Option<&str>, mode: InputMode, pending: &str) -> bool {
+    command == Some("abbrev") && supports_abbrev(mode) && pending.is_empty()
+}
+
 pub(super) fn input_mode_for_command(command: &str) -> Option<InputMode> {
     match command {
         "set-input-mode-hiragana" => Some(InputMode::Hiragana),

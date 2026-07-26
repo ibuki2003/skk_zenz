@@ -96,7 +96,13 @@ impl Backend {
                 };
                 return Ok((true, None));
             }
-            Some("abbrev") if supports_abbrev(self.input_state.mode) => {
+            Some("abbrev")
+                if should_start_abbrev(
+                    command,
+                    self.input_state.mode,
+                    &self.input_state.direct_pending,
+                ) =>
+            {
                 let commit = self.finish_direct();
                 if let Some(commit) = &commit {
                     self.input_state.context.push_str(commit);
@@ -634,6 +640,16 @@ mod tests {
         assert!(supports_abbrev(InputMode::HankakuKatakana));
         assert!(!supports_abbrev(InputMode::Latin));
         assert!(!supports_abbrev(InputMode::WideLatin));
+    }
+
+    #[test]
+    fn pending_romaji_takes_priority_over_abbrev() {
+        assert!(should_start_abbrev(Some("abbrev"), InputMode::Hiragana, ""));
+        assert!(!should_start_abbrev(
+            Some("abbrev"),
+            InputMode::Hiragana,
+            "z"
+        ));
     }
 
     #[test]
