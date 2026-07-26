@@ -2,6 +2,8 @@
 
 SKKを現代的にしたいな!というモチベでPoCを作ってみます
 
+https://github.com/user-attachments/assets/b3436241-f0a0-4302-b3a5-362a261e35b7
+
 ## アピールポイント (独自の機能)
 
 - Zenzaiを利用
