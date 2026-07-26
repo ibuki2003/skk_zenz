@@ -1,10 +1,12 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <iomanip>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -59,8 +61,12 @@ using SkkZenzUpdateCallback =
     void (*)(void *userData, const SkkZenzUpdate *update);
 using SkkZenzMessageCallback =
     void (*)(void *userData, bool success, const char *message);
+using SkkZenzModelDownloadCallback =
+    void (*)(void *userData, std::uint8_t kind, const char *message);
 
-SkkZenzBackend *skk_zenz_backend_new(const char *configPath);
+SkkZenzBackend *skk_zenz_backend_new(
+    const char *configPath, void *userData,
+    SkkZenzModelDownloadCallback callback);
 void skk_zenz_backend_free(SkkZenzBackend *backend);
 bool skk_zenz_backend_key(
     SkkZenzBackend *backend, const char *text, const char *key,
@@ -284,8 +290,10 @@ public:
         : instance_(instance),
           initializationThread_([this]() {
               backend_.store(
-                  skk_zenz_backend_new(nullptr),
+                  skk_zenz_backend_new(
+                      nullptr, this, modelDownloadCallback),
                   std::memory_order_release);
+              initializationFinished_.store(true, std::memory_order_release);
           }) {
         modeAction_ = std::make_unique<ModeAction>(
             [this]() { return lastInputMode_; });
@@ -338,6 +346,7 @@ public:
                 fcitx::EventSourceTime *timer, std::uint64_t) {
                 auto *backend =
                     backend_.load(std::memory_order_acquire);
+                showPendingModelDownloadMessages();
                 if (!backend ||
                     !skk_zenz_backend_poll_model_reload(
                         backend, this, configMessageCallback)) {
@@ -349,6 +358,21 @@ public:
                 return true;
             });
         modelReloadTimer_->setEnabled(false);
+        initializationTimer_ = instance_->eventLoop().addTimeEvent(
+            CLOCK_MONOTONIC,
+            fcitx::now(CLOCK_MONOTONIC) + 100'000, 0,
+            [this](
+                fcitx::EventSourceTime *timer, std::uint64_t) {
+                showPendingModelDownloadMessages();
+                if (initializationFinished_.load(std::memory_order_acquire)) {
+                    showPendingModelDownloadMessages();
+                    timer->setEnabled(false);
+                } else {
+                    timer->setNextInterval(100'000);
+                    timer->setOneShot();
+                }
+                return true;
+            });
         eventHandlers_.emplace_back(instance_->watchEvent(
             fcitx::EventType::InputContextKeyEvent,
             fcitx::EventWatcherPhase::PostInputMethod,
@@ -397,6 +421,7 @@ public:
 
     ~SkkZenzEngine() override {
         configEvent_.reset();
+        initializationTimer_.reset();
         modelReloadTimer_.reset();
         rerankTimer_.reset();
         initializationThread_.join();
@@ -595,10 +620,47 @@ public:
     }
 
 private:
+    struct ModelDownloadMessage {
+        std::uint8_t kind;
+        std::string text;
+    };
+
     static void configMessageCallback(
         void *userData, bool success, const char *message) {
         static_cast<SkkZenzEngine *>(userData)->showConfigMessage(
             success, message);
+    }
+
+    static void modelDownloadCallback(
+        void *userData, std::uint8_t kind, const char *message) {
+        auto *engine = static_cast<SkkZenzEngine *>(userData);
+        std::lock_guard lock(engine->modelDownloadMessagesMutex_);
+        engine->modelDownloadMessages_.push_back(
+            {kind, message ? message : ""});
+    }
+
+    void showPendingModelDownloadMessages() {
+        std::deque<ModelDownloadMessage> messages;
+        {
+            std::lock_guard lock(modelDownloadMessagesMutex_);
+            messages.swap(modelDownloadMessages_);
+        }
+        for (const auto &message : messages) {
+            showModelDownloadMessage(message);
+        }
+    }
+
+    void showModelDownloadMessage(const ModelDownloadMessage &message) {
+        auto *notifications =
+            instance_->addonManager().addon("notifications", true);
+        if (!notifications) {
+            return;
+        }
+        notifications->call<fcitx::INotifications::showTip>(
+            "skk-zenz-model-download", "SKK Zenz", "",
+            message.kind == 2 ? "SKK Zenz model download error"
+                              : "SKK Zenz model download",
+            message.text, 5000);
     }
 
     void showConfigMessage(bool success, const char *message) {
@@ -792,7 +854,10 @@ private:
     }
 
     fcitx::Instance *instance_;
+    std::mutex modelDownloadMessagesMutex_;
+    std::deque<ModelDownloadMessage> modelDownloadMessages_;
     std::atomic<SkkZenzBackend *> backend_{nullptr};
+    std::atomic<bool> initializationFinished_{false};
     std::thread initializationThread_;
     std::vector<std::unique_ptr<
         fcitx::HandlerTableEntry<fcitx::EventHandler>>>
@@ -809,6 +874,7 @@ private:
     fcitx::InputContext *rerankContext_ = nullptr;
     std::unique_ptr<fcitx::EventSourceTime> rerankTimer_;
     std::unique_ptr<fcitx::EventSourceIO> configEvent_;
+    std::unique_ptr<fcitx::EventSourceTime> initializationTimer_;
     std::unique_ptr<fcitx::EventSourceTime> modelReloadTimer_;
 };
 

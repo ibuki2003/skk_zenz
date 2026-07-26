@@ -1,7 +1,9 @@
 use std::ffi::{CStr, c_char, c_void};
 use std::path::Path;
 use std::ptr;
+use std::sync::Arc;
 
+use skk_zenz_backend::zenz::ModelDownloadEvent;
 use skk_zenz_backend::{
     Backend, BackendConfig, InputEvent, InputUpdate, Key, KeyEvent, Modifiers, NamedKey,
 };
@@ -32,6 +34,7 @@ pub struct FfiUpdate {
 
 pub type UpdateCallback = unsafe extern "C" fn(*mut c_void, *const FfiUpdate);
 pub type MessageCallback = unsafe extern "C" fn(*mut c_void, bool, *const c_char);
+pub type ModelDownloadCallback = unsafe extern "C" fn(*mut c_void, u8, *const c_char);
 
 unsafe fn required_str<'a>(value: *const c_char) -> Option<&'a str> {
     if value.is_null() {
@@ -234,7 +237,11 @@ pub unsafe extern "C" fn skk_zenz_backend_poll_model_reload(
 /// # Safety
 /// `config_path` must point to a valid NUL-terminated string.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn skk_zenz_backend_new(config_path: *const c_char) -> *mut Backend {
+pub unsafe extern "C" fn skk_zenz_backend_new(
+    config_path: *const c_char,
+    user_data: *mut c_void,
+    callback: ModelDownloadCallback,
+) -> *mut Backend {
     let config = if config_path.is_null() {
         BackendConfig::from_xdg()
     } else {
@@ -243,7 +250,26 @@ pub unsafe extern "C" fn skk_zenz_backend_new(config_path: *const c_char) -> *mu
         };
         BackendConfig::from_toml_file(Path::new(config_path))
     };
-    match config.and_then(Backend::load) {
+    let user_data = user_data as usize;
+    let model_events = Arc::new(move |event| {
+        let (kind, message) = match event {
+            ModelDownloadEvent::Started { reference } => {
+                (0, format!("AIモデルをダウンロードしています: {reference}"))
+            }
+            ModelDownloadEvent::Completed { reference } => (
+                1,
+                format!("AIモデルのダウンロードが完了しました: {reference}"),
+            ),
+            ModelDownloadEvent::Failed { reference, error } => (
+                2,
+                format!("AIモデルのダウンロードに失敗しました: {reference}: {error}"),
+            ),
+        };
+        let message = nul_terminated(&message);
+        // SAFETY: The C++ engine owns user_data until its initialization thread is joined.
+        unsafe { callback(user_data as *mut c_void, kind, message.as_ptr().cast()) };
+    });
+    match config.and_then(|config| Backend::load_with_model_events(config, model_events)) {
         Ok(backend) => Box::into_raw(Box::new(backend)),
         Err(error) => {
             eprintln!("skk-zenz: backend initialization failed: {error:#}");

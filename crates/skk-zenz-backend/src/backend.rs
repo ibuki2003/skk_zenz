@@ -12,7 +12,7 @@ use crate::input::{
 use crate::keymap::{KeyEvent, Keymap, Modifiers};
 use crate::numeric::NumericInput;
 use crate::rom_kana::{KanaConversion, KanaMode, RomKanaRule, convert_kana_script};
-use crate::zenz::{RerankUpdate, Score, ZenzWorker};
+use crate::zenz::{ModelDownloadEventHandler, RerankUpdate, Score, ZenzWorker};
 
 #[derive(Clone, Debug)]
 struct ActiveRerank {
@@ -42,6 +42,13 @@ pub struct Backend {
 
 impl Backend {
     pub fn load(config: BackendConfig) -> Result<Self> {
+        Self::load_with_model_events(config, std::sync::Arc::new(|_| {}))
+    }
+
+    pub fn load_with_model_events(
+        config: BackendConfig,
+        model_events: ModelDownloadEventHandler,
+    ) -> Result<Self> {
         let config_watcher = ConfigWatcher::new(&config.config_path)?;
         let zenz_config = config.zenz.clone();
         let keymaps = [
@@ -58,7 +65,7 @@ impl Backend {
         })
         .collect::<Result<_>>()?;
         Ok(Self {
-            scorer: ZenzWorker::load(config.zenz)?,
+            scorer: ZenzWorker::load_with_model_events(config.zenz, model_events)?,
             system_dictionaries: open_system_dictionaries(&config.system_dictionaries)?,
             user_dictionary: UserDictionary::open(
                 &config.user_dictionary,

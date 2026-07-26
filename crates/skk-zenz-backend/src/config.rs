@@ -4,7 +4,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use hf_hub::api::sync::ApiBuilder;
 use serde::Deserialize;
 
 use crate::zenz::ZenzConfig;
@@ -131,15 +130,16 @@ impl BackendConfig {
         }
         let base = path.parent().unwrap_or_else(|| Path::new(""));
         let config_dir = config_dir()?;
-        let model_path = match file.model_path {
-            Some(path) => resolve_path(base, path),
-            None => download_huggingface_model(
-                file.huggingface
-                    .as_deref()
-                    .context("model_path または huggingface を指定してください")?,
-            )?,
+        let mut zenz = match file.model_path {
+            Some(path) => ZenzConfig::new(resolve_path(base, path)),
+            None => {
+                let reference = file
+                    .huggingface
+                    .context("model_path または huggingface を指定してください")?;
+                parse_huggingface_reference(&reference)?;
+                ZenzConfig::from_huggingface(reference)
+            }
         };
-        let mut zenz = ZenzConfig::new(model_path);
         zenz.context_size = file.context_size;
         zenz.threads = file.threads;
         zenz.gpu_layers = file.gpu_layers;
@@ -173,18 +173,7 @@ impl CandidateOrderConfig {
     }
 }
 
-fn download_huggingface_model(reference: &str) -> Result<PathBuf> {
-    let (repo, filename) = parse_huggingface_reference(reference)?;
-    let api = ApiBuilder::new()
-        .with_progress(true)
-        .build()
-        .context("Hugging Face API の初期化に失敗しました")?;
-    api.model(repo.clone())
-        .get(filename)
-        .with_context(|| format!("{repo}/{filename} の取得に失敗しました"))
-}
-
-fn parse_huggingface_reference(reference: &str) -> Result<(String, &str)> {
+pub(crate) fn parse_huggingface_reference(reference: &str) -> Result<(String, &str)> {
     let mut fields = reference.splitn(3, '/');
     let owner = fields.next().unwrap_or_default();
     let repository = fields.next().unwrap_or_default();

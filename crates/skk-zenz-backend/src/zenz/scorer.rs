@@ -31,8 +31,14 @@ self_cell!(
 );
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModelSource {
+    Local(PathBuf),
+    HuggingFace(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ZenzConfig {
-    pub model_path: PathBuf,
+    pub model: ModelSource,
     pub context_size: u32,
     pub parallel_sequences: u32,
     pub threads: Option<i32>,
@@ -42,11 +48,30 @@ pub struct ZenzConfig {
 impl ZenzConfig {
     pub fn new(model_path: impl Into<PathBuf>) -> Self {
         Self {
-            model_path: model_path.into(),
+            model: ModelSource::Local(model_path.into()),
             context_size: 1024,
             parallel_sequences: 1,
             threads: None,
             gpu_layers: 999,
+        }
+    }
+
+    pub fn from_huggingface(reference: impl Into<String>) -> Self {
+        Self {
+            model: ModelSource::HuggingFace(reference.into()),
+            context_size: 1024,
+            parallel_sequences: 1,
+            threads: None,
+            gpu_layers: 999,
+        }
+    }
+
+    fn model_path(&self) -> Result<&Path> {
+        match &self.model {
+            ModelSource::Local(path) => Ok(path),
+            ModelSource::HuggingFace(reference) => {
+                bail!("Hugging Faceモデルが未解決です: {reference}")
+            }
         }
     }
 }
@@ -265,10 +290,11 @@ fn load_model_and_context(backend: &LlamaBackend, config: &ZenzConfig) -> Result
         bail!("parallel_sequencesは1以上必要です");
     }
     let load_started = Instant::now();
-    let model = load_model(backend, &config.model_path, config.gpu_layers)?;
+    let model_path = config.model_path()?;
+    let model = load_model(backend, model_path, config.gpu_layers)?;
     eprintln!(
         "model loaded from {}, took {:.2} sec.",
-        config.model_path.display(),
+        model_path.display(),
         load_started.elapsed().as_secs_f64()
     );
     let mut context_params = LlamaContextParams::default()

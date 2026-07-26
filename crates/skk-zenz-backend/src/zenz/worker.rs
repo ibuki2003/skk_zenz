@@ -1,13 +1,26 @@
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, anyhow};
+use hf_hub::api::sync::ApiBuilder;
+use hf_hub::{Cache, Repo};
 
 use crate::candidate::Candidate;
+use crate::config::parse_huggingface_reference;
 
-use super::{Score, ZenzConfig, ZenzScorer};
+use super::{ModelSource, Score, ZenzConfig, ZenzScorer};
 
 pub(crate) const INITIAL_RERANK_COUNT: usize = 3;
+
+#[derive(Clone, Debug)]
+pub enum ModelDownloadEvent {
+    Started { reference: String },
+    Completed { reference: String },
+    Failed { reference: String, error: String },
+}
+
+pub type ModelDownloadEventHandler = Arc<dyn Fn(ModelDownloadEvent) + Send + Sync>;
 
 pub(crate) enum RerankUpdate {
     Candidate {
@@ -57,7 +70,10 @@ pub(crate) struct ZenzWorker {
 }
 
 impl ZenzWorker {
-    pub(crate) fn load(config: ZenzConfig) -> Result<Self> {
+    pub(crate) fn load_with_model_events(
+        config: ZenzConfig,
+        model_events: ModelDownloadEventHandler,
+    ) -> Result<Self> {
         let (commands, command_receiver) = mpsc::channel();
         let (updates, update_receiver) = mpsc::channel();
         let (reload_updates, reload_update_receiver) = mpsc::channel();
@@ -65,11 +81,18 @@ impl ZenzWorker {
         let thread = thread::Builder::new()
             .name("skk-zenz-scorer".to_owned())
             .spawn(move || {
-                let scorer = ZenzScorer::load(&config);
+                let scorer = resolve_model(config, &model_events)
+                    .and_then(|config| ZenzScorer::load(&config));
                 match scorer {
                     Ok(scorer) => {
                         let _ = ready_sender.send(Ok(()));
-                        run_worker(scorer, command_receiver, updates, reload_updates);
+                        run_worker(
+                            scorer,
+                            command_receiver,
+                            updates,
+                            reload_updates,
+                            model_events,
+                        );
                     }
                     Err(error) => {
                         let _ = ready_sender.send(Err(format!("{error:#}")));
@@ -185,6 +208,7 @@ fn run_worker(
     commands: Receiver<WorkerCommand>,
     updates: Sender<RerankUpdate>,
     reload_updates: Sender<Result<(), String>>,
+    model_events: ModelDownloadEventHandler,
 ) {
     let mut pending = None;
     loop {
@@ -235,7 +259,9 @@ fn run_worker(
                 }
             }
             WorkerCommand::Reload { config } => {
-                let result = scorer.reload(&config).map_err(|error| format!("{error:#}"));
+                let result = resolve_model(config, &model_events)
+                    .and_then(|config| scorer.reload(&config))
+                    .map_err(|error| format!("{error:#}"));
                 let _ = reload_updates.send(result);
             }
             WorkerCommand::Rerank {
@@ -288,6 +314,50 @@ fn run_worker(
                 let _ = updates.send(RerankUpdate::Finished { generation });
             }
             WorkerCommand::Shutdown => return,
+        }
+    }
+}
+
+fn resolve_model(
+    mut config: ZenzConfig,
+    model_events: &ModelDownloadEventHandler,
+) -> Result<ZenzConfig> {
+    let ModelSource::HuggingFace(reference) = &config.model else {
+        return Ok(config);
+    };
+    let reference = reference.clone();
+    let (repo_id, filename) = parse_huggingface_reference(&reference)?;
+    let repo = Repo::model(repo_id);
+    let cache = Cache::default();
+    if let Some(path) = cache.repo(repo.clone()).get(filename) {
+        config.model = ModelSource::Local(path);
+        return Ok(config);
+    }
+
+    model_events(ModelDownloadEvent::Started {
+        reference: reference.clone(),
+    });
+    let result = ApiBuilder::from_cache(cache)
+        .with_progress(false)
+        .build()
+        .context("Hugging Face API の初期化に失敗しました")
+        .and_then(|api| {
+            api.repo(repo)
+                .download(filename)
+                .with_context(|| format!("{reference} の取得に失敗しました"))
+        });
+    match result {
+        Ok(path) => {
+            model_events(ModelDownloadEvent::Completed { reference });
+            config.model = ModelSource::Local(path);
+            Ok(config)
+        }
+        Err(error) => {
+            model_events(ModelDownloadEvent::Failed {
+                reference,
+                error: format!("{error:#}"),
+            });
+            Err(error)
         }
     }
 }
