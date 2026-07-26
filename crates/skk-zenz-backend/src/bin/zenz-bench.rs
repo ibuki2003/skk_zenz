@@ -118,7 +118,7 @@ struct Args {
     #[arg(long, value_delimiter = ',', default_value = "1024")]
     context_sizes: Vec<u32>,
 
-    /// GPU へ offload するレイヤー数（cuda/vulkan feature 時のみ有効）
+    /// GPU へoffloadするレイヤー数（vulkan feature時のみ有効）
     #[arg(long, default_value_t = 999)]
     gpu_layers: u32,
 }

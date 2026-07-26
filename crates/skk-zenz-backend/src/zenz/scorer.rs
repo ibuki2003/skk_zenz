@@ -289,11 +289,11 @@ fn load_model_and_context(backend: &LlamaBackend, config: &ZenzConfig) -> Result
 }
 
 fn load_model(backend: &LlamaBackend, path: &Path, gpu_layers: u32) -> Result<LlamaModel> {
-    #[cfg(any(feature = "cuda", feature = "vulkan"))]
+    #[cfg(feature = "vulkan")]
     let model_params = LlamaModelParams::default().with_n_gpu_layers(gpu_layers);
-    #[cfg(not(any(feature = "cuda", feature = "vulkan")))]
+    #[cfg(not(feature = "vulkan"))]
     let model_params = LlamaModelParams::default();
-    #[cfg(not(any(feature = "cuda", feature = "vulkan")))]
+    #[cfg(not(feature = "vulkan"))]
     let _ = gpu_layers;
 
     let mut model_params = pin!(model_params);

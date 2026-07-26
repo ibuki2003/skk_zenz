@@ -9,6 +9,9 @@ pkgs.mkShell {
     ninja
     pkg-config
     rustup
+    shaderc
+    vulkan-headers
+    vulkan-loader
   ];
 
   shellHook = ''
