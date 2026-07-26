@@ -18,12 +18,14 @@ impl Backend {
         input: &str,
         okuri: Option<&str>,
     ) -> Result<Vec<Candidate>> {
+        #[cfg(debug_assertions)]
         eprintln!("[BACKEND] lookup context={context:?} input={input:?} okuri={okuri:?}");
         let order = if okuri.is_some() {
             self.candidate_order.okuri_ari.clone()
         } else {
             self.candidate_order.okuri_nasi.clone()
         };
+        #[cfg(debug_assertions)]
         eprintln!("[BACKEND] lookup order={order:?}");
         let numeric_input = NumericInput::extract(input);
         let dictionary_candidates =
@@ -47,18 +49,22 @@ impl Backend {
             }
         }
         let candidates = self.rerank_candidates(context, input, candidates, &order)?;
-        eprint!("[BACKEND] lookup -> ");
-        for candidate in &candidates {
-            eprint!(
-                "{:?}({}, {:?}) ",
-                candidate.output, candidate.loss, candidate.recency
-            );
+        #[cfg(debug_assertions)]
+        {
+            eprint!("[BACKEND] lookup -> ");
+            for candidate in &candidates {
+                eprint!(
+                    "{:?}({}, {:?}) ",
+                    candidate.output, candidate.loss, candidate.recency
+                );
+            }
         }
         Ok(candidates)
     }
 
     pub(super) fn lookup_abbrev(&mut self, input: &str) -> Result<Vec<Candidate>> {
         let order = self.candidate_order.abbrev.clone();
+        #[cfg(debug_assertions)]
         eprintln!("[BACKEND] abbr lookup order={order:?}");
         let context = self.input_state.context.clone();
         let numeric_input = NumericInput::extract(input);

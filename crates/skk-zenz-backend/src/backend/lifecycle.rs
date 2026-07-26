@@ -119,8 +119,10 @@ impl Backend {
     }
 
     pub fn prepare(&mut self, context: &str, input: &str) -> Result<Score> {
+        #[cfg(debug_assertions)]
         eprintln!("[BACKEND] prepare context={context:?} input={input:?}");
         let result = self.scorer.prepare(context, input);
+        #[cfg(debug_assertions)]
         eprintln!("[BACKEND] prepare -> {result:?}");
         result
     }

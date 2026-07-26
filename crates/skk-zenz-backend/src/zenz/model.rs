@@ -2,6 +2,7 @@ use std::ffi::{CStr, CString, c_char};
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::pin::{Pin, pin};
+#[cfg(debug_assertions)]
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -33,9 +34,11 @@ pub(super) fn load_model_and_context(
     if config.parallel_sequences == 0 {
         bail!("parallel_sequencesは1以上必要です");
     }
+    #[cfg(debug_assertions)]
     let load_started = Instant::now();
     let model_path = config.model_path()?;
     let model = load_model(backend, model_path, config.gpu_layers)?;
+    #[cfg(debug_assertions)]
     eprintln!(
         "model loaded from {}, took {:.2} sec.",
         model_path.display(),

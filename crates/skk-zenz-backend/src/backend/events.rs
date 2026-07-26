@@ -98,13 +98,17 @@ impl Backend {
                         changed = true;
                     }
                 }
-                RerankUpdate::Failed { generation, error } => {
+                RerankUpdate::Failed {
+                    generation,
+                    error: _error,
+                } => {
                     if self
                         .active_rerank
                         .as_ref()
                         .is_some_and(|active| active.generation == generation)
                     {
-                        eprintln!("skk-zenz: asynchronous rerank failed: {error}");
+                        #[cfg(debug_assertions)]
+                        eprintln!("skk-zenz: asynchronous rerank failed: {_error}");
                         self.active_rerank = None;
                         changed = true;
                     }

@@ -252,8 +252,9 @@ fn run_worker(
                         Err(TryRecvError::Empty) => break,
                     }
                 }
-                if !superseded && let Err(error) = scorer.prepare(&context, &input) {
-                    eprintln!("speculative prepare failed: {error:#}");
+                if !superseded && let Err(_error) = scorer.prepare(&context, &input) {
+                    #[cfg(debug_assertions)]
+                    eprintln!("speculative prepare failed: {_error:#}");
                 }
             }
             WorkerCommand::Reload { config } => {
