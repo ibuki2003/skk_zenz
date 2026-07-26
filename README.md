@@ -105,6 +105,8 @@ TODO: nixで成果物をつくる
 
 開発環境は`nix-shell`またはdirenvで読み込めます。
 `build.sh`が`result/`へ成果物を生成します。
+Vulkan backendを使用する場合は、`build.sh -DSKK_ZENZ_VULKAN=ON`で有効化できます。
+この設定はCMakeのbuild directoryに保存され、`OFF`を指定すると無効化できます。
 `start.sh`が、fcitx5の探索パスへ`./result/`を追加してfcitx5を起動します (`-r`でreplace running instance)
 設定画面で `SKK Zenz` を追加してください。
 
@@ -112,6 +114,12 @@ TODO: nixで成果物をつくる
 direnv allow
 ./build.sh
 ./start.sh
+```
+
+Vulkan backendを有効にしてビルドする場合:
+
+```console
+./build.sh -DSKK_ZENZ_VULKAN=ON
 ```
 
 backendを初期化できない場合や入力処理に失敗した場合は標準エラーへ原因を記録し、

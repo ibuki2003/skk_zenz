@@ -9,6 +9,14 @@ include("${FCITX_INSTALL_CMAKECONFIG_DIR}/Fcitx5Utils/Fcitx5CompilerSettings.cma
 
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
 
+option(SKK_ZENZ_VULKAN "Enable the Vulkan backend" OFF)
+
+set(RUST_FEATURE_ARGS)
+if(SKK_ZENZ_VULKAN)
+    find_package(Vulkan REQUIRED)
+    list(APPEND RUST_FEATURE_ARGS --features skk-zenz-backend/vulkan)
+endif()
+
 set(RUST_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target")
 set(RUST_LIBRARY "${RUST_TARGET_DIR}/release/libskk_zenz_fcitx5.a")
 file(
@@ -26,6 +34,7 @@ add_custom_command(
         "${CARGO_EXECUTABLE}" build --release
         --package skk-zenz-fcitx5
         --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
+        ${RUST_FEATURE_ARGS}
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
         "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.lock"
@@ -49,6 +58,9 @@ target_link_libraries(
     skk-zenz
     PRIVATE Fcitx5::Core Fcitx5::Module::Notifications OpenMP::OpenMP_CXX "${RUST_LIBRARY}"
 )
+if(SKK_ZENZ_VULKAN)
+    target_link_libraries(skk-zenz PRIVATE Vulkan::Vulkan)
+endif()
 set_target_properties(skk-zenz PROPERTIES PREFIX "")
 
 configure_file(
