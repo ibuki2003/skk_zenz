@@ -114,6 +114,7 @@ mod tests {
             okuri_ari = ["ai_score", "recency"]
             okuri_nasi = ["from_user"]
             abbrev = []
+            prefix_suffix = ["recency"]
             "#,
         )
         .unwrap();
@@ -126,6 +127,10 @@ mod tests {
             [CandidateSortKey::FromUser]
         );
         assert!(file.candidate_order.abbrev.is_empty());
+        assert_eq!(
+            file.candidate_order.prefix_suffix,
+            [CandidateSortKey::Recency]
+        );
         file.candidate_order.validate().unwrap();
     }
 

@@ -89,6 +89,22 @@ impl Backend {
                 };
                 return Ok((true, None));
             }
+            Some("special-midasi")
+                if matches!(
+                    self.input_state.mode,
+                    InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana
+                ) =>
+            {
+                let commit = self.finish_direct();
+                if let Some(commit) = &commit {
+                    self.input_state.context.push_str(commit);
+                }
+                self.input_state.phase = Phase::Preedit {
+                    stem: Composition::from_output(">".to_owned()),
+                    okuri: None,
+                };
+                return Ok((true, commit));
+            }
             Some("abbrev")
                 if should_start_abbrev(
                     command,
@@ -189,6 +205,11 @@ impl Backend {
             }
             Some("next-candidate") => {
                 return self.start_lookup(stem, okuri);
+            }
+            Some("special-midasi") if okuri.is_none() => {
+                let mut input = stem.finish(&self.rom_kana_rule, self.input_state.mode.into());
+                input.push('>');
+                return self.start_lookup(Composition::from_output(input), None);
             }
             Some("commit") | Some("commit-unhandled") => {
                 let output = composition_output(

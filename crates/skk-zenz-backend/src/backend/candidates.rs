@@ -5,6 +5,9 @@ impl Backend {
     pub(super) fn current_order_uses_ai_score(&self) -> bool {
         let order = match &self.input_state.phase {
             Phase::Preedit { okuri: Some(_), .. } => &self.candidate_order.okuri_ari,
+            Phase::Preedit { stem, okuri: None } if is_prefix_or_suffix(&stem.display()) => {
+                &self.candidate_order.prefix_suffix
+            }
             Phase::Preedit { okuri: None, .. } => &self.candidate_order.okuri_nasi,
             Phase::Abbrev { .. } => &self.candidate_order.abbrev,
             Phase::Direct | Phase::Selecting { .. } => return false,
@@ -20,7 +23,9 @@ impl Backend {
     ) -> Result<Vec<Candidate>> {
         #[cfg(debug_assertions)]
         eprintln!("[BACKEND] lookup context={context:?} input={input:?} okuri={okuri:?}");
-        let order = if okuri.is_some() {
+        let order = if is_prefix_or_suffix(input) {
+            self.candidate_order.prefix_suffix.clone()
+        } else if okuri.is_some() {
             self.candidate_order.okuri_ari.clone()
         } else {
             self.candidate_order.okuri_nasi.clone()
@@ -202,5 +207,22 @@ impl Backend {
             candidate.okuri.as_deref(),
             &candidate.text,
         )
+    }
+}
+
+fn is_prefix_or_suffix(input: &str) -> bool {
+    input.starts_with('>') || input.ends_with('>')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_prefix_or_suffix;
+
+    #[test]
+    fn recognizes_prefix_and_suffix_midasi() {
+        assert!(is_prefix_or_suffix(">接頭"));
+        assert!(is_prefix_or_suffix("接尾>"));
+        assert!(!is_prefix_or_suffix("通常"));
+        assert!(!is_prefix_or_suffix("途>中"));
     }
 }

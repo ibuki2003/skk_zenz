@@ -21,6 +21,8 @@ pub struct CandidateOrderConfig {
     pub okuri_nasi: Vec<CandidateSortKey>,
     #[serde(default = "default_sort_order_recency")]
     pub abbrev: Vec<CandidateSortKey>,
+    #[serde(default = "default_sort_order_recency")]
+    pub prefix_suffix: Vec<CandidateSortKey>,
 }
 
 impl Default for CandidateOrderConfig {
@@ -29,6 +31,7 @@ impl Default for CandidateOrderConfig {
             okuri_ari: default_sort_order_ai(),
             okuri_nasi: default_sort_order_recency(),
             abbrev: default_sort_order_recency(),
+            prefix_suffix: default_sort_order_recency(),
         }
     }
 }
@@ -39,6 +42,7 @@ impl CandidateOrderConfig {
             ("okuri_ari", &self.okuri_ari),
             ("okuri_nasi", &self.okuri_nasi),
             ("abbrev", &self.abbrev),
+            ("prefix_suffix", &self.prefix_suffix),
         ] {
             let mut seen = HashSet::new();
             if let Some(duplicate) = order.iter().find(|key| !seen.insert(**key)) {

@@ -100,12 +100,16 @@ recency_half_life_days = 14.0
 okuri_ari = ["from_user", "ai_score"]
 okuri_nasi = ["from_user", "recency"]
 abbrev = ["from_user", "recency"]
+prefix_suffix = ["from_user", "recency"]
 ```
 
 ユーザ辞書は同じディレクトリの`user.sqlite3`
 候補の使用頻度は時間とともに指数減衰し、`recency_half_life_days`で半減期を日数指定できます。
 候補順は`candidate_order`の各listへ優先順に`from_user`、`recency`、`ai_score`を指定します。
+`prefix_suffix`は、`>`で始まるprefix見出しと`>`で終わるsuffix見出しの両方に適用されます。
 `ai_score`を含む種類の変換だけzenzによるスコアリングを行います。
+`special-midasi`に割り当てたキー（libskkのデフォルトkeymapでは`>`）は、
+通常入力中には`>`から始まる見出し入力を開始し、見出し入力中には末尾へ`>`を加えて変換を開始します。
 system辞書は`~/.config/skk-zenz/dictionary_list`へ1行1ファイルで指定 相対パスも使えます
 
 このファイルがない場合は `$XDG_DATA_HOME/fcitx5/skk/dictionary_list`を代わりに使用します
