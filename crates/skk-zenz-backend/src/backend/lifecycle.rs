@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context;
 
 impl Backend {
     pub fn load(config: BackendConfig) -> Result<Self> {
@@ -10,6 +11,11 @@ impl Backend {
         model_events: ModelDownloadEventHandler,
     ) -> Result<Self> {
         let config_watcher = ConfigWatcher::new(&config.config_path)?;
+        let conversion_history_path = config
+            .config_path
+            .parent()
+            .context("設定ファイルの親ディレクトリがありません")?
+            .join("conversion_history.csv");
         let zenz_config = config.zenz.clone();
         let keymaps = [
             (InputMode::Hiragana, "hiragana"),
@@ -38,6 +44,7 @@ impl Backend {
             active_rerank: None,
             fcitx5: config.fcitx5,
             config_path: config.config_path,
+            conversion_history_path,
             config_watcher,
             zenz_config,
             pending_zenz_configs: std::collections::VecDeque::new(),

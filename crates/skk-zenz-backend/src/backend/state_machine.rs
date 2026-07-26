@@ -49,14 +49,22 @@ impl Backend {
     }
 
     pub(super) fn select_candidate_at(&mut self, index: usize) -> Result<(bool, Option<String>)> {
-        let candidate = match &self.input_state.phase {
-            Phase::Selecting { candidates, .. } => candidates.get(index).cloned(),
+        let selection = match &self.input_state.phase {
+            Phase::Selecting {
+                input,
+                okuri,
+                candidates,
+                ..
+            } => candidates
+                .get(index)
+                .cloned()
+                .map(|candidate| (input.clone(), okuri.clone(), candidate)),
             _ => None,
         };
-        let Some(candidate) = candidate else {
+        let Some((input, okuri, candidate)) = selection else {
             return Ok((false, None));
         };
-        self.select(&candidate)?;
+        self.confirm_candidate(&input, okuri.as_deref(), &candidate)?;
         self.input_state.context.push_str(&candidate.output);
         self.input_state.phase = Phase::Direct;
         Ok((true, Some(candidate.output)))
@@ -370,7 +378,7 @@ impl Backend {
             }
             Some("commit") | Some("commit-unhandled") => {
                 if let Some(candidate) = candidates.get(cursor).cloned() {
-                    self.select(&candidate)?;
+                    self.confirm_candidate(&input, okuri.as_deref(), &candidate)?;
                     self.input_state.context.push_str(&candidate.output);
                     self.input_state.phase = Phase::Direct;
                     return Ok((command == Some("commit"), Some(candidate.output)));
@@ -378,7 +386,7 @@ impl Backend {
             }
             _ if should_forward_after_selection(&event, command) => {
                 if let Some(candidate) = candidates.get(cursor).cloned() {
-                    self.select(&candidate)?;
+                    self.confirm_candidate(&input, okuri.as_deref(), &candidate)?;
                     self.input_state.context.push_str(&candidate.output);
                     self.input_state.phase = Phase::Direct;
                     let (consumed, following_commit) = self.handle_direct(event, command)?;
@@ -528,21 +536,25 @@ impl Backend {
     }
 
     pub(super) fn finish_input(&mut self) -> Result<Option<String>> {
-        match &self.input_state.phase {
+        match self.input_state.phase.clone() {
             Phase::Direct => Ok(self.finish_direct()),
             Phase::Preedit { stem, okuri } => Ok(Some(composition_output(
                 &self.rom_kana_rule,
                 self.input_state.mode,
-                stem,
+                &stem,
                 okuri.as_ref(),
             ))),
-            Phase::Abbrev { input } => Ok(Some(input.clone())),
+            Phase::Abbrev { input } => Ok(Some(input)),
             Phase::Selecting {
-                candidates, cursor, ..
+                input,
+                okuri,
+                candidates,
+                cursor,
+                ..
             } => {
-                let candidate = candidates.get(*cursor).cloned();
+                let candidate = candidates.get(cursor).cloned();
                 if let Some(candidate) = &candidate {
-                    self.select(candidate)?;
+                    self.confirm_candidate(&input, okuri.as_deref(), candidate)?;
                 }
                 Ok(candidate.map(|candidate| candidate.output))
             }

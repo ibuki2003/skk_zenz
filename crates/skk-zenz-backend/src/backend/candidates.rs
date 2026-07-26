@@ -201,6 +201,30 @@ impl Backend {
         self.user_dictionary.select(&dictionary_candidate)
     }
 
+    pub(super) fn confirm_candidate(
+        &mut self,
+        input: &str,
+        okuri: Option<&str>,
+        candidate: &Candidate,
+    ) -> Result<()> {
+        self.select(candidate)?;
+
+        let text = candidate
+            .output
+            .strip_suffix(okuri.unwrap_or_default())
+            .unwrap_or(&candidate.output);
+        if let Err(error) = conversion_history::append(
+            &self.conversion_history_path,
+            &self.input_state.context,
+            input,
+            okuri,
+            text,
+        ) {
+            eprintln!("[skk-zenz] {error:#}");
+        }
+        Ok(())
+    }
+
     pub fn purge(&mut self, candidate: &Candidate) -> Result<bool> {
         self.user_dictionary.purge(
             &candidate.input,

@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use crate::candidate::{Candidate, CandidateSource, DictionaryCandidate};
 use crate::config::{BackendConfig, CandidateOrderConfig, CandidateSortKey, Fcitx5Config};
 use crate::config_watcher::ConfigWatcher;
+use crate::conversion_history;
 use crate::dictionary::{Dictionary, SkkFileDictionary, UserDictionary, open_system_dictionaries};
 use crate::input::{
     Composition, InputEvent, InputMode, InputState, InputUpdate, Phase, Registration,
@@ -34,6 +35,7 @@ pub struct Backend {
     active_rerank: Option<ActiveRerank>,
     fcitx5: Fcitx5Config,
     config_path: std::path::PathBuf,
+    conversion_history_path: std::path::PathBuf,
     config_watcher: ConfigWatcher,
     zenz_config: crate::zenz::ZenzConfig,
     pending_zenz_configs: std::collections::VecDeque<crate::zenz::ZenzConfig>,

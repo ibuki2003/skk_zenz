@@ -2,6 +2,7 @@ mod backend;
 mod candidate;
 mod config;
 mod config_watcher;
+mod conversion_history;
 mod dictionary;
 mod input;
 mod kana_script;
