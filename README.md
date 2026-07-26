@@ -99,7 +99,19 @@ rom-kana ruleは、`~/.config/skk-zenz/rules`のほか、`~/.config/libskk/rules
 
 ## build
 
-TODO: nixで成果物をつくる
+Nix packageは`default.nix`で定義しています。
+
+```nix
+skk-zenz = pkgs.callPackage ./default.nix {};
+skk-zenz-vulkan = skk-zenz.override { useVulkan = true; };
+```
+
+flakeからは、Vulkanを使用しないデフォルトのpackageをビルドできます。
+`flake.lock`は利用側でnixpkgsを固定できるよう、リポジトリには含めません。
+
+```console
+nix build
+```
 
 ### development
 
