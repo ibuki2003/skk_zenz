@@ -79,6 +79,7 @@ impl Backend {
                         continue;
                     };
                     merge_reranked_candidate(
+                        &self.conversion,
                         candidates,
                         cursor,
                         candidate,

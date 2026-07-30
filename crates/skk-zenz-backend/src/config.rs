@@ -102,6 +102,7 @@ mod tests {
             "#,
         )
         .unwrap();
+        assert_eq!(file.huggingface, default_huggingface_model());
     }
 
     #[test]

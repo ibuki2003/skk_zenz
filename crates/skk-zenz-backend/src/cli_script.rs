@@ -64,7 +64,7 @@ pub(crate) fn run_script(backend: &mut Backend, lines: &[String]) -> Result<()> 
                 let candidate = candidates
                     .get(candidate_index)
                     .context("selectの候補番号が範囲外です")?;
-                backend.select(candidate)?;
+                backend.record_usage(candidate)?;
             }
             "purge" => {
                 let candidate_index: usize =

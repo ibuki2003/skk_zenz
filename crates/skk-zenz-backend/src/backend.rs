@@ -1,17 +1,17 @@
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use crate::candidate::{Candidate, CandidateSource, DictionaryCandidate};
-use crate::config::{BackendConfig, CandidateOrderConfig, CandidateSortKey, Fcitx5Config};
+use crate::candidate::Candidate;
+use crate::config::{BackendConfig, CandidateSortKey, Fcitx5Config};
 use crate::config_watcher::ConfigWatcher;
+use crate::conversion::ConversionCore;
 use crate::conversion_history;
-use crate::dictionary::{Dictionary, SkkFileDictionary, UserDictionary, open_system_dictionaries};
+use crate::dictionary::SqliteUserDictionary;
 use crate::input::{
     Composition, InputEvent, InputMode, InputState, InputUpdate, Phase, Registration,
     SelectionOrigin,
 };
 use crate::keymap::{KeyEvent, Keymap, Modifiers};
-use crate::numeric::NumericInput;
 use crate::rom_kana::{KanaConversion, KanaMode, RomKanaRule, convert_kana_script};
 use crate::zenz::{ModelDownloadEventHandler, RerankUpdate, Score, ZenzWorker};
 
@@ -26,11 +26,9 @@ struct ActiveRerank {
 
 pub struct Backend {
     scorer: ZenzWorker,
-    system_dictionaries: Vec<SkkFileDictionary>,
-    user_dictionary: UserDictionary,
+    conversion: ConversionCore<SqliteUserDictionary>,
     rom_kana_rule: RomKanaRule,
     keymaps: HashMap<InputMode, Keymap>,
-    candidate_order: CandidateOrderConfig,
     input_state: InputState,
     active_rerank: Option<ActiveRerank>,
     fcitx5: Fcitx5Config,

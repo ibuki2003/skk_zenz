@@ -567,10 +567,22 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::conversion::ConversionCore;
+    use crate::dictionary::MemoryUserDictionary;
+    use crate::{CandidateOrderConfig, CandidateSource};
 
     fn rule() -> RomKanaRule {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-data/rules");
         RomKanaRule::load("base", &[root]).unwrap()
+    }
+
+    fn conversion_core() -> ConversionCore<MemoryUserDictionary> {
+        ConversionCore::load(
+            &[] as &[&Path],
+            MemoryUserDictionary::new(1.0),
+            CandidateOrderConfig::default(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -700,39 +712,6 @@ mod tests {
     }
 
     #[test]
-    fn candidate_order_follows_configured_key_priority() {
-        let candidate = |recency, loss| Candidate {
-            input: String::new(),
-            okuri: None,
-            text: String::new(),
-            output: String::new(),
-            annotation: None,
-            source: CandidateSource::System,
-            loss,
-            token_count: 0,
-            recency,
-        };
-        let frequent = candidate(Some(2.0), 2.0);
-        let accurate = candidate(Some(1.0), 1.0);
-        assert_eq!(
-            compare_candidates(
-                &frequent,
-                &accurate,
-                &[CandidateSortKey::Recency, CandidateSortKey::AiScore],
-            ),
-            std::cmp::Ordering::Less
-        );
-        assert_eq!(
-            compare_candidates(
-                &frequent,
-                &accurate,
-                &[CandidateSortKey::AiScore, CandidateSortKey::Recency],
-            ),
-            std::cmp::Ordering::Greater
-        );
-    }
-
-    #[test]
     fn asynchronous_rerank_preserves_selected_candidate() {
         let candidate = |output: &str, loss| Candidate {
             input: String::new(),
@@ -749,6 +728,7 @@ mod tests {
         let mut cursor = 1;
 
         merge_reranked_candidate(
+            &conversion_core(),
             &mut candidates,
             &mut cursor,
             candidate("first", 1.0),
@@ -783,6 +763,7 @@ mod tests {
         let mut cursor = 0;
 
         merge_reranked_candidate(
+            &conversion_core(),
             &mut candidates,
             &mut cursor,
             candidate("first", 1.0),

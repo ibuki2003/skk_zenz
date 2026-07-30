@@ -1,4 +1,5 @@
 use super::*;
+use crate::dictionary::UserDictionary;
 
 pub(super) fn is_preedit_start(event: &KeyEvent) -> bool {
     event.modifiers == Modifiers::SHIFT
@@ -151,40 +152,9 @@ pub(super) fn composition_output(
     output
 }
 
-pub(super) fn source_order(source: CandidateSource) -> u8 {
-    match source {
-        CandidateSource::User => 0,
-        CandidateSource::System => 1,
-    }
-}
-
-pub(super) fn compare_candidates(
-    left: &Candidate,
-    right: &Candidate,
-    order: &[CandidateSortKey],
-) -> std::cmp::Ordering {
-    order
-        .iter()
-        .map(|key| match key {
-            CandidateSortKey::FromUser => {
-                source_order(left.source).cmp(&source_order(right.source))
-            }
-            CandidateSortKey::Recency => right
-                .recency
-                .unwrap_or_default()
-                .total_cmp(&left.recency.unwrap_or_default()),
-            CandidateSortKey::AiScore => left.loss.total_cmp(&right.loss),
-        })
-        .find(|ordering| !ordering.is_eq())
-        .unwrap_or(std::cmp::Ordering::Equal)
-}
-
-pub(super) fn deduplicate_candidate_outputs(candidates: &mut Vec<Candidate>) {
-    let mut seen = HashSet::new();
-    candidates.retain(|candidate| seen.insert(candidate.output.clone()));
-}
-
-pub(super) fn merge_reranked_candidate(
+/// Inserts one asynchronously scored candidate while preserving IME selection state.
+pub(super) fn merge_reranked_candidate<U: UserDictionary>(
+    conversion: &ConversionCore<U>,
     candidates: &mut Vec<Candidate>,
     cursor: &mut usize,
     candidate: Candidate,
@@ -195,7 +165,7 @@ pub(super) fn merge_reranked_candidate(
         .get(*cursor)
         .map(|candidate| candidate.output.clone());
     candidates.push(candidate);
-    candidates.sort_by(|left, right| compare_candidates(left, right, order));
+    conversion.rerank_candidates(candidates, order);
     if !preserve_selection {
         *cursor = 0;
     } else if let Some(selected) = selected
@@ -204,18 +174,5 @@ pub(super) fn merge_reranked_candidate(
             .position(|candidate| candidate.output == selected)
     {
         *cursor = index;
-    }
-}
-
-impl From<&Candidate> for DictionaryCandidate {
-    fn from(candidate: &Candidate) -> Self {
-        Self {
-            input: candidate.input.clone(),
-            okuri: candidate.okuri.clone(),
-            text: candidate.text.clone(),
-            annotation: candidate.annotation.clone(),
-            source: candidate.source,
-            recency: candidate.recency,
-        }
     }
 }

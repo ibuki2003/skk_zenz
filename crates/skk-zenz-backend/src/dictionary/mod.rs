@@ -8,7 +8,8 @@ use anyhow::Result;
 use crate::candidate::DictionaryCandidate;
 
 pub(crate) use skk_file::SkkFileDictionary;
-pub(crate) use user::UserDictionary;
+pub use user::{MemoryUserDictionary, UserDictionary};
+pub(crate) use user::{SqliteUserDictionary, unix_timestamp};
 
 pub(crate) trait Dictionary {
     fn lookup(&self, input: &str, okuri: Option<&str>) -> Result<Vec<DictionaryCandidate>>;

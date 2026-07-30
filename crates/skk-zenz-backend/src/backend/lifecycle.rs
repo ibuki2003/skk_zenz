@@ -30,16 +30,18 @@ impl Backend {
                 .map(|keymap| (mode, keymap))
         })
         .collect::<Result<_>>()?;
+        let user_dictionary =
+            SqliteUserDictionary::open(&config.user_dictionary, config.recency_half_life_days)?;
+        let conversion = ConversionCore::load(
+            &config.system_dictionaries,
+            user_dictionary,
+            config.candidate_order,
+        )?;
         Ok(Self {
             scorer: ZenzWorker::load_with_model_events(config.zenz, model_events)?,
-            system_dictionaries: open_system_dictionaries(&config.system_dictionaries)?,
-            user_dictionary: UserDictionary::open(
-                &config.user_dictionary,
-                config.recency_half_life_days,
-            )?,
+            conversion,
             rom_kana_rule: RomKanaRule::load(&config.rom_kana_rule, &config.rule_search_paths)?,
             keymaps,
-            candidate_order: config.candidate_order,
             input_state: InputState::default(),
             active_rerank: None,
             fcitx5: config.fcitx5,
@@ -102,14 +104,14 @@ impl Backend {
                 .map(|keymap| (mode, keymap))
         })
         .collect::<Result<_>>()?;
-        let system_dictionaries = open_system_dictionaries(&config.system_dictionaries)?;
+        self.conversion
+            .reload_system_dictionaries(&config.system_dictionaries)?;
 
         self.rom_kana_rule = rom_kana_rule;
         self.keymaps = keymaps;
-        self.system_dictionaries = system_dictionaries;
-        self.user_dictionary
+        self.conversion
             .set_half_life_days(config.recency_half_life_days);
-        self.candidate_order = config.candidate_order;
+        self.conversion.set_candidate_order(config.candidate_order);
         self.fcitx5 = config.fcitx5;
         self.active_rerank = None;
         if reload_model {
