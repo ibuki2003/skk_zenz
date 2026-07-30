@@ -24,6 +24,7 @@ pub struct BackendConfig {
     pub system_dictionaries: Vec<PathBuf>,
     pub user_dictionary: PathBuf,
     pub recency_half_life_days: f64,
+    pub conversion_history: bool,
     pub candidate_order: CandidateOrderConfig,
     pub rom_kana_rule: String,
     pub rule_search_paths: Vec<PathBuf>,
@@ -79,6 +80,7 @@ impl BackendConfig {
             system_dictionaries: load_dictionary_paths(&config_dir)?,
             user_dictionary: config_dir.join(USER_DICTIONARY),
             recency_half_life_days: file.recency_half_life_days,
+            conversion_history: file.conversion_history,
             candidate_order: file.candidate_order,
             rom_kana_rule: file.rom_kana_rule,
             rule_search_paths: rule_search_paths(&config_dir)?,
@@ -103,6 +105,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(file.huggingface, default_huggingface_model());
+        assert!(!file.conversion_history);
+    }
+
+    #[test]
+    fn enables_conversion_history() {
+        let file: ConfigFile = toml::from_str(
+            r#"
+            model_path = "models/model.gguf"
+            conversion_history = true
+            "#,
+        )
+        .unwrap();
+        assert!(file.conversion_history);
     }
 
     #[test]

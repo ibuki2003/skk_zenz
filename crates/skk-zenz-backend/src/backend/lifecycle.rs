@@ -47,6 +47,7 @@ impl Backend {
             fcitx5: config.fcitx5,
             config_path: config.config_path,
             conversion_history_path,
+            conversion_history_enabled: config.conversion_history,
             config_watcher,
             zenz_config,
             pending_zenz_configs: std::collections::VecDeque::new(),
@@ -113,6 +114,7 @@ impl Backend {
             .set_half_life_days(config.recency_half_life_days);
         self.conversion.set_candidate_order(config.candidate_order);
         self.fcitx5 = config.fcitx5;
+        self.conversion_history_enabled = config.conversion_history;
         self.active_rerank = None;
         if reload_model {
             self.scorer.reload(config.zenz.clone())?;

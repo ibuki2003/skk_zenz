@@ -34,6 +34,7 @@ pub struct Backend {
     fcitx5: Fcitx5Config,
     config_path: std::path::PathBuf,
     conversion_history_path: std::path::PathBuf,
+    conversion_history_enabled: bool,
     config_watcher: ConfigWatcher,
     zenz_config: crate::zenz::ZenzConfig,
     pending_zenz_configs: std::collections::VecDeque<crate::zenz::ZenzConfig>,

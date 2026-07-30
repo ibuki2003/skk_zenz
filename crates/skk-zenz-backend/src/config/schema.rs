@@ -94,6 +94,8 @@ pub(super) struct ConfigFile {
     #[serde(default = "default_recency_half_life_days")]
     pub(super) recency_half_life_days: f64,
     #[serde(default)]
+    pub(super) conversion_history: bool,
+    #[serde(default)]
     pub(super) candidate_order: CandidateOrderConfig,
     #[serde(default)]
     pub(super) frontend: FrontendConfig,

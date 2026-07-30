@@ -109,18 +109,20 @@ impl Backend {
     ) -> Result<()> {
         self.record_usage(candidate)?;
 
-        let text = candidate
-            .output
-            .strip_suffix(okuri.unwrap_or_default())
-            .unwrap_or(&candidate.output);
-        if let Err(error) = conversion_history::append(
-            &self.conversion_history_path,
-            &self.input_state.context,
-            input,
-            okuri,
-            text,
-        ) {
-            eprintln!("[skk-zenz] {error:#}");
+        if self.conversion_history_enabled {
+            let text = candidate
+                .output
+                .strip_suffix(okuri.unwrap_or_default())
+                .unwrap_or(&candidate.output);
+            if let Err(error) = conversion_history::append(
+                &self.conversion_history_path,
+                &self.input_state.context,
+                input,
+                okuri,
+                text,
+            ) {
+                eprintln!("[skk-zenz] {error:#}");
+            }
         }
         Ok(())
     }
