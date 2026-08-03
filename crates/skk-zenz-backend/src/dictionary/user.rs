@@ -23,6 +23,9 @@ pub trait UserDictionary {
         now: i64,
     ) -> Result<Vec<DictionaryCandidate>>;
 
+    /// Returns okuri-nasi inputs beginning with `prefix`.
+    fn complete(&self, prefix: &str) -> Result<Vec<String>>;
+
     /// Registers a user-supplied candidate and counts the registration as one use.
     fn register_at(
         &mut self,
@@ -110,6 +113,19 @@ impl UserDictionary for SqliteUserDictionary {
             })?
             .collect::<rusqlite::Result<_>>()?;
         Ok(candidates)
+    }
+
+    fn complete(&self, prefix: &str) -> Result<Vec<String>> {
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT input
+             FROM candidates
+             WHERE okuri = '' AND text <> ''
+               AND substr(input, 1, length(?1)) = ?1
+             ORDER BY input",
+        )?;
+        Ok(statement
+            .query_map([prefix], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
     }
 
     fn register_at(
@@ -261,6 +277,20 @@ impl UserDictionary for MemoryUserDictionary {
                 )),
             })
             .collect())
+    }
+
+    fn complete(&self, prefix: &str) -> Result<Vec<String>> {
+        let mut completions: Vec<_> = self
+            .entries
+            .keys()
+            .filter(|(input, okuri, text)| {
+                okuri.is_empty() && !text.is_empty() && input.starts_with(prefix)
+            })
+            .map(|(input, _, _)| input.clone())
+            .collect();
+        completions.sort();
+        completions.dedup();
+        Ok(completions)
     }
 
     fn register_at(

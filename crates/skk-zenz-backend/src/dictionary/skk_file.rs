@@ -115,6 +115,17 @@ impl Dictionary for SkkFileDictionary {
             })
             .collect())
     }
+
+    fn complete(&self, prefix: &str) -> Result<Vec<String>> {
+        let mut completions: Vec<_> = self
+            .okuri_nasi
+            .iter()
+            .filter(|(input, entries)| input.starts_with(prefix) && !entries.is_empty())
+            .map(|(input, _)| input.clone())
+            .collect();
+        completions.sort();
+        Ok(completions)
+    }
 }
 
 fn parse_candidates(value: &str) -> Result<Vec<Entry>> {

@@ -47,7 +47,21 @@ pub(crate) struct InputState {
     pub(crate) context: String,
     pub(crate) phase: Phase,
     pub(crate) direct_pending: String,
+    pub(crate) completion: Option<CompletionState>,
     pub(crate) registrations: Vec<Registration>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompletionState {
+    pub(crate) candidates: Vec<String>,
+    pub(crate) cursor: usize,
+}
+
+impl CompletionState {
+    pub(crate) fn advance(&mut self) -> &str {
+        self.cursor = (self.cursor + 1) % self.candidates.len();
+        &self.candidates[self.cursor]
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -95,6 +109,7 @@ impl InputState {
         }
         self.phase = Phase::Direct;
         self.direct_pending.clear();
+        self.completion = None;
         self.registrations.clear();
     }
 
@@ -187,6 +202,17 @@ mod tests {
         assert_eq!(composition.display(), "か");
         assert!(composition.has_output());
         assert!(!composition.has_pending());
+    }
+
+    #[test]
+    fn completion_cycles_over_the_original_candidates() {
+        let mut completion = CompletionState {
+            candidates: vec!["かな".to_owned(), "かなづかい".to_owned()],
+            cursor: 0,
+        };
+
+        assert_eq!(completion.advance(), "かなづかい");
+        assert_eq!(completion.advance(), "かな");
     }
 
     #[test]

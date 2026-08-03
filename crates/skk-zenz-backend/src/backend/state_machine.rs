@@ -13,6 +13,9 @@ impl Backend {
             &self.rom_kana_rule,
             self.input_state.mode,
         );
+        if command != Some("complete") {
+            self.input_state.completion = None;
+        }
         if matches!(command, Some("next-candidate" | "previous-candidate"))
             && let Some(active) = &mut self.active_rerank
         {
@@ -198,6 +201,27 @@ impl Backend {
             }
             Some("next-candidate") => {
                 return self.start_lookup(stem, okuri);
+            }
+            Some("complete") if okuri.is_none() => {
+                if let Some(completion) = &mut self.input_state.completion {
+                    stem = Composition::from_output(completion.advance().to_owned());
+                } else {
+                    let prefix = stem.finish(&self.rom_kana_rule, self.input_state.mode.into());
+                    let candidates = if prefix.is_empty() {
+                        Vec::new()
+                    } else {
+                        self.complete(&prefix)?
+                    };
+                    if let Some(first) = candidates.first() {
+                        stem = Composition::from_output(first.clone());
+                        self.input_state.completion = Some(CompletionState {
+                            candidates,
+                            cursor: 0,
+                        });
+                    }
+                }
+                self.input_state.phase = Phase::Preedit { stem, okuri };
+                return Ok((true, None));
             }
             Some("special-midasi") if okuri.is_none() => {
                 let mut input = stem.finish(&self.rom_kana_rule, self.input_state.mode.into());

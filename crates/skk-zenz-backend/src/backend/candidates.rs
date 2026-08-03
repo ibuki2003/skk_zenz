@@ -2,6 +2,10 @@ use super::*;
 use crate::candidate::CandidateSource;
 
 impl Backend {
+    pub(super) fn complete(&self, prefix: &str) -> Result<Vec<String>> {
+        self.conversion.complete(prefix)
+    }
+
     pub(super) fn current_order_uses_ai_score(&self) -> bool {
         let order = match &self.input_state.phase {
             Phase::Preedit { stem, okuri } => self

@@ -13,6 +13,7 @@ pub(crate) use user::{SqliteUserDictionary, unix_timestamp};
 
 pub(crate) trait Dictionary {
     fn lookup(&self, input: &str, okuri: Option<&str>) -> Result<Vec<DictionaryCandidate>>;
+    fn complete(&self, prefix: &str) -> Result<Vec<String>>;
 }
 
 pub(crate) fn open_system_dictionaries(

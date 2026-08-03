@@ -8,8 +8,8 @@ use crate::conversion::ConversionCore;
 use crate::conversion_history;
 use crate::dictionary::SqliteUserDictionary;
 use crate::input::{
-    Composition, InputEvent, InputMode, InputState, InputUpdate, Phase, Registration,
-    SelectionOrigin,
+    CompletionState, Composition, InputEvent, InputMode, InputState, InputUpdate, Phase,
+    Registration, SelectionOrigin,
 };
 use crate::keymap::{KeyEvent, Keymap, Modifiers};
 use crate::rom_kana::{KanaConversion, KanaMode, RomKanaRule, convert_kana_script};

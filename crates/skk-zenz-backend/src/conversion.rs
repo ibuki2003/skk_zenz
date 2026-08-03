@@ -86,6 +86,17 @@ impl<U: UserDictionary> ConversionCore<U> {
         self.generate_candidates_at(input, None, false, unix_timestamp()?)
     }
 
+    /// Completes an okuri-nasi dictionary input without AI scoring.
+    pub(crate) fn complete(&self, prefix: &str) -> Result<Vec<String>> {
+        let mut completions = self.user_dictionary.complete(prefix)?;
+        for dictionary in &self.system_dictionaries {
+            completions.extend(dictionary.complete(prefix)?);
+        }
+        let mut seen = HashSet::new();
+        completions.retain(|input| input != prefix && seen.insert(input.clone()));
+        Ok(completions)
+    }
+
     /// Registers a user candidate and records its first use at the current time.
     pub fn register(
         &mut self,
@@ -334,5 +345,24 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].output, "仮名");
         assert!(core.lookup_at("から", None, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn completes_okuri_nasi_inputs_without_empty_entries() {
+        let mut core = ConversionCore::load(
+            &[] as &[&Path],
+            MemoryUserDictionary::new(1.0),
+            CandidateOrderConfig::default(),
+        )
+        .unwrap();
+        core.register_at("かな", None, "仮名", None, 0).unwrap();
+        core.register_at("かなづかい", None, "仮名遣い", None, 0)
+            .unwrap();
+        core.register_at("かない", Some("い"), "叶", None, 0)
+            .unwrap();
+        core.register_at("から", None, "", None, 0).unwrap();
+
+        assert_eq!(core.complete("か").unwrap(), ["かな", "かなづかい"]);
+        assert_eq!(core.complete("かな").unwrap(), ["かなづかい"]);
     }
 }
