@@ -384,6 +384,16 @@ impl Backend {
                     return Ok((command == Some("commit"), Some(candidate.output)));
                 }
             }
+            Some("delete") => {
+                if let Some(candidate) = candidates.get(cursor).cloned() {
+                    self.confirm_candidate(&input, okuri.as_deref(), &candidate)?;
+                    let mut output = candidate.output;
+                    output.pop();
+                    self.input_state.context.push_str(&output);
+                    self.input_state.phase = Phase::Direct;
+                    return Ok((true, Some(output)));
+                }
+            }
             _ if should_forward_after_selection(&event, command) => {
                 if let Some(candidate) = candidates.get(cursor).cloned() {
                     self.confirm_candidate(&input, okuri.as_deref(), &candidate)?;
@@ -656,7 +666,7 @@ mod tests {
             &KeyEvent::character(":", ':', Modifiers::SHIFT),
             Some("upper-;")
         ));
-        assert!(should_forward_after_selection(
+        assert!(!should_forward_after_selection(
             &KeyEvent::named("BackSpace", Modifiers::empty()),
             Some("delete")
         ));

@@ -68,7 +68,7 @@ pub(super) fn selection_source_phase(
 }
 
 pub(super) fn should_forward_after_selection(event: &KeyEvent, command: Option<&str>) -> bool {
-    command == Some("delete") || input_text(event, command).is_some()
+    input_text(event, command).is_some()
 }
 
 pub(super) fn supports_abbrev(mode: InputMode) -> bool {
