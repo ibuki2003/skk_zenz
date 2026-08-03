@@ -163,6 +163,9 @@ impl<U: UserDictionary> ConversionCore<U> {
         let mut candidates = Vec::with_capacity(dictionary_candidates.len());
 
         for candidate in dictionary_candidates {
+            if candidate.text.is_empty() {
+                continue;
+            }
             for text in self.expand_numeric_candidate_at(&candidate, numeric_input.as_ref(), now)? {
                 let output = if append_okuri {
                     format!("{text}{}", candidate.okuri.as_deref().unwrap_or_default())
@@ -313,5 +316,23 @@ mod tests {
         core.record_usage_at(&candidates[0], 86_400).unwrap();
         let candidates = core.lookup_at("かな", None, 86_400).unwrap();
         assert_eq!(candidates[0].recency, Some(1.5));
+    }
+
+    #[test]
+    fn ignores_empty_dictionary_entries() {
+        let mut core = ConversionCore::load(
+            &[] as &[&Path],
+            MemoryUserDictionary::new(1.0),
+            CandidateOrderConfig::default(),
+        )
+        .unwrap();
+        core.register_at("かな", None, "", None, 0).unwrap();
+        core.register_at("かな", None, "仮名", None, 0).unwrap();
+        core.register_at("から", None, "", None, 0).unwrap();
+
+        let candidates = core.lookup_at("かな", None, 0).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].output, "仮名");
+        assert!(core.lookup_at("から", None, 0).unwrap().is_empty());
     }
 }
