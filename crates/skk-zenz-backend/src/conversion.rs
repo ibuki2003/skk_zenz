@@ -3,12 +3,13 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::candidate::{Candidate, CandidateSource, DictionaryCandidate};
+use crate::candidate::{Candidate, DictionaryCandidate};
 use crate::config::{CandidateOrderConfig, CandidateSortKey};
 use crate::dictionary::{
     Dictionary, SkkFileDictionary, UserDictionary, open_system_dictionaries, unix_timestamp,
 };
 use crate::numeric::NumericInput;
+use crate::scoring::{self, DefaultStrategy, ScoringStrategy};
 
 /// Owns the reusable state and behavior required to produce and rank conversion candidates.
 ///
@@ -132,22 +133,17 @@ impl<U: UserDictionary> ConversionCore<U> {
         )
     }
 
-    /// Converts frequency and AI loss into the ascending value for one sort key.
-    ///
-    /// This method is the centralized adjustment point for experiments that
-    /// change how frequency and model loss influence candidate ranking. The
-    /// `FromUser` key is handled separately because it is not a numeric feature.
-    pub fn ranking_score(frequency: f64, ai_loss: f64, sort_key: CandidateSortKey) -> f64 {
-        match sort_key {
-            CandidateSortKey::Recency => -frequency,
-            CandidateSortKey::AiScore => ai_loss,
-            CandidateSortKey::FromUser => 0.0,
-        }
-    }
-
     /// Sorts candidates according to the supplied configured key priority.
     pub fn rerank_candidates(&self, candidates: &mut [Candidate], order: &[CandidateSortKey]) {
-        candidates.sort_by(|left, right| Self::compare_candidates(left, right, order));
+        scoring::rerank_candidates(candidates, &DefaultStrategy { order });
+    }
+
+    /// Sorts candidates using a caller-supplied scoring strategy.
+    pub fn rerank_candidates_with(
+        candidates: &mut [Candidate],
+        strategy: &impl ScoringStrategy,
+    ) {
+        scoring::rerank_candidates(candidates, strategy);
     }
 
     /// Removes candidates that produce the same committed output.
@@ -253,37 +249,6 @@ impl<U: UserDictionary> ConversionCore<U> {
         })
     }
 
-    /// Compares two candidates using configured source and numeric ranking features.
-    fn compare_candidates(
-        left: &Candidate,
-        right: &Candidate,
-        order: &[CandidateSortKey],
-    ) -> std::cmp::Ordering {
-        order
-            .iter()
-            .map(|key| match key {
-                CandidateSortKey::FromUser => {
-                    source_order(left.source).cmp(&source_order(right.source))
-                }
-                CandidateSortKey::Recency | CandidateSortKey::AiScore => {
-                    let left_score =
-                        Self::ranking_score(left.recency.unwrap_or_default(), left.loss, *key);
-                    let right_score =
-                        Self::ranking_score(right.recency.unwrap_or_default(), right.loss, *key);
-                    left_score.total_cmp(&right_score)
-                }
-            })
-            .find(|ordering| !ordering.is_eq())
-            .unwrap_or(std::cmp::Ordering::Equal)
-    }
-}
-
-/// Returns the stable source priority used by the `FromUser` sort key.
-fn source_order(source: CandidateSource) -> u8 {
-    match source {
-        CandidateSource::User => 0,
-        CandidateSource::System => 1,
-    }
 }
 
 /// Reports whether a dictionary key denotes prefix or suffix conversion.
@@ -294,6 +259,7 @@ fn is_prefix_or_suffix(input: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::candidate::CandidateSource;
     use crate::dictionary::MemoryUserDictionary;
 
     #[test]

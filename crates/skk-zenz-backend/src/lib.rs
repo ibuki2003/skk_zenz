@@ -12,6 +12,7 @@ mod numeric;
 mod okuri;
 mod rom_kana;
 mod rule_file;
+pub mod scoring;
 pub mod zenz;
 
 pub use backend::Backend;
