@@ -268,7 +268,6 @@ fn retain_repeated_groups(groups: &mut Vec<ScoredGroup>) {
 struct EvalResult {
     mrr: f64,
     top1: f64,
-    count: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -287,17 +286,6 @@ enum UserAdjustment {
     EntropyCorrection,
 }
 
-impl UserAdjustment {
-    const ALL: [(Self, &'static str); 6] = [
-        (Self::None, "none"),
-        (Self::Correction, "correction"),
-        (Self::Sigmoid, "sigmoid"),
-        (Self::Entropy, "entropy"),
-        (Self::SigmoidCorrection, "sigmoid_correction"),
-        (Self::EntropyCorrection, "entropy_correction"),
-    ];
-}
-
 #[derive(Clone, Copy)]
 enum Smoothing {
     Correction,
@@ -306,19 +294,126 @@ enum Smoothing {
     Entropy,
 }
 
-impl Smoothing {
-    const ALL: [(Self, &'static str); 4] = [
-        (Self::Correction, "smoothed_correction"),
-        (Self::Fixed, "smoothed_fixed"),
-        (Self::Sigmoid, "smoothed_sigmoid"),
-        (Self::Entropy, "smoothed_entropy"),
-    ];
-}
-
 #[derive(Clone, Copy)]
 enum UserTreatment {
     Existing(UserAdjustment),
     Smoothed(Smoothing),
+}
+
+#[derive(Clone, Copy)]
+enum LengthNormalization {
+    None,
+    TokenPower(f64),
+    CharacterPower(f64),
+}
+
+#[derive(Clone)]
+struct PlotStrategy {
+    label: String,
+    term: Term,
+    user_treatment: UserTreatment,
+    length_normalization: LengthNormalization,
+}
+
+fn plot_strategies() -> Vec<PlotStrategy> {
+    plot_strategies_length_normalization()
+}
+
+fn plot_strategies_methods() -> Vec<PlotStrategy> {
+    vec![
+        // linear probability
+        PlotStrategy {
+            label: "prob_none".to_string(),
+            term: Term::Probability,
+            user_treatment: UserTreatment::Existing(UserAdjustment::None),
+            length_normalization: LengthNormalization::None,
+        },
+        PlotStrategy {
+            label: "prob_correction".to_string(),
+            term: Term::Probability,
+            user_treatment: UserTreatment::Existing(UserAdjustment::Correction),
+            length_normalization: LengthNormalization::None,
+        },
+        PlotStrategy {
+            label: "prob_sigmoid".to_string(),
+            term: Term::Probability,
+            user_treatment: UserTreatment::Existing(UserAdjustment::Sigmoid),
+            length_normalization: LengthNormalization::None,
+        },
+        PlotStrategy {
+            label: "prob_entropy".to_string(),
+            term: Term::Probability,
+            user_treatment: UserTreatment::Existing(UserAdjustment::Entropy),
+            length_normalization: LengthNormalization::None,
+        },
+        PlotStrategy {
+            label: "prob_sigmoid_correction".to_string(),
+            term: Term::Probability,
+            user_treatment: UserTreatment::Existing(UserAdjustment::SigmoidCorrection),
+            length_normalization: LengthNormalization::None,
+        },
+        PlotStrategy {
+            label: "prob_entropy_correction".to_string(),
+            term: Term::Probability,
+            user_treatment: UserTreatment::Existing(UserAdjustment::EntropyCorrection),
+            length_normalization: LengthNormalization::None,
+        },
+        // log probability
+        PlotStrategy {
+            label: "log_smooth_correction".to_string(),
+            term: Term::LogProbability,
+            user_treatment: UserTreatment::Smoothed(Smoothing::Correction),
+            length_normalization: LengthNormalization::None,
+        },
+        PlotStrategy {
+            label: "log_smooth_fixed".to_string(),
+            term: Term::LogProbability,
+            user_treatment: UserTreatment::Smoothed(Smoothing::Fixed),
+            length_normalization: LengthNormalization::None,
+        },
+        PlotStrategy {
+            label: "log_smooth_sigmoid".to_string(),
+            term: Term::LogProbability,
+            user_treatment: UserTreatment::Smoothed(Smoothing::Sigmoid),
+            length_normalization: LengthNormalization::None,
+        },
+        PlotStrategy {
+            label: "log_smooth_entropy".to_string(),
+            term: Term::LogProbability,
+            user_treatment: UserTreatment::Smoothed(Smoothing::Entropy),
+            length_normalization: LengthNormalization::None,
+        },
+    ]
+}
+
+fn plot_strategies_length_normalization() -> Vec<PlotStrategy> {
+    // baseline; log probability + smoothed entropy
+    let baseline = PlotStrategy {
+        label: "baseline".to_string(),
+        term: Term::LogProbability,
+        user_treatment: UserTreatment::Smoothed(Smoothing::Entropy),
+        length_normalization: LengthNormalization::None,
+    };
+
+    let mut strategies = vec![baseline.clone()];
+
+    // token
+    for exponent in [0.25, 0.5, 0.75, 1.0] {
+        strategies.push(PlotStrategy {
+            label: format!("token_{:03}", (exponent * 100.0) as usize),
+            length_normalization: LengthNormalization::TokenPower(exponent),
+            ..baseline.clone()
+        });
+    }
+    // character
+    for exponent in [0.25, 0.5, 0.75, 1.0] {
+        strategies.push(PlotStrategy {
+            label: format!("character_{:03}", (exponent * 100.0) as usize),
+            length_normalization: LengthNormalization::CharacterPower(exponent),
+            ..baseline.clone()
+        });
+    }
+    strategies
 }
 
 fn normalized(values: impl Iterator<Item = f64>, count: usize) -> Vec<f64> {
@@ -352,8 +447,7 @@ fn confidence_factors(probabilities: &[f64], a: f64, b: f64) -> (f64, f64) {
 
 fn evaluate_strategy(
     groups: &[ScoredGroup],
-    term: Term,
-    treatment: UserTreatment,
+    strategy: &PlotStrategy,
     lambda: f64,
     args: &AnalyzeArgs,
 ) -> EvalResult {
@@ -365,16 +459,30 @@ fn evaluate_strategy(
         if count == 0 {
             continue;
         }
-        let min_loss = group
+        let normalized_losses: Vec<_> = group
             .candidates
             .iter()
-            .map(|candidate| candidate.loss)
+            .map(|candidate| {
+                let length = match strategy.length_normalization {
+                    LengthNormalization::None => 1.0,
+                    LengthNormalization::TokenPower(exponent) => {
+                        (candidate.token_count.max(1) as f64).powf(exponent)
+                    }
+                    LengthNormalization::CharacterPower(exponent) => {
+                        (candidate.text.chars().count().max(1) as f64).powf(exponent)
+                    }
+                };
+                candidate.loss / length
+            })
+            .collect();
+        let min_loss = normalized_losses
+            .iter()
+            .copied()
             .fold(f64::INFINITY, f64::min);
         let ai_probabilities = normalized(
-            group
-                .candidates
+            normalized_losses
                 .iter()
-                .map(|candidate| (-(candidate.loss - min_loss)).exp()),
+                .map(|loss| (-(loss - min_loss)).exp()),
             count,
         );
         let user_probabilities = normalized(
@@ -391,11 +499,11 @@ fn evaluate_strategy(
         let mut ranked: Vec<_> = group.candidates.iter().enumerate().collect();
         ranked.sort_by(|(left_index, _), (right_index, _)| {
             let score = |index: usize| {
-                let probability_term = |probability: f64| match term {
+                let probability_term = |probability: f64| match strategy.term {
                     Term::Probability => probability,
                     Term::LogProbability => probability.max(f64::MIN_POSITIVE).ln(),
                 };
-                let (user_probability, user_factor) = match treatment {
+                let (user_probability, user_factor) = match strategy.user_treatment {
                     UserTreatment::Existing(adjustment) => {
                         let factor = match adjustment {
                             UserAdjustment::None => 1.0,
@@ -437,11 +545,9 @@ fn evaluate_strategy(
         }
     }
 
-    let count = groups.len();
     EvalResult {
-        mrr: reciprocal_rank_sum / count as f64,
-        top1: top1_count as f64 / count as f64,
-        count,
+        mrr: reciprocal_rank_sum / groups.len() as f64,
+        top1: top1_count as f64 / groups.len() as f64,
     }
 }
 
@@ -465,50 +571,25 @@ fn cmd_analyze(args: AnalyzeArgs) -> Result<()> {
     }
     eprintln!("グループ数: {}/{}", groups.len(), total_count);
 
+    let plot_strategies = plot_strategies();
+
     let file =
         File::create(&args.output).with_context(|| format!("出力先: {}", args.output.display()))?;
     let mut out = BufWriter::new(file);
-    writeln!(out, "# strategy\tlambda\tMRR\ttop1_rate\tcount")?;
-    for (adjustment, adjustment_label) in UserAdjustment::ALL {
-        let label = format!("probability_{adjustment_label}");
-        let steps = (1.0 / args.lambda_step).ceil() as usize;
-        for step in 0..=steps {
-            let lambda = (step as f64 * args.lambda_step).min(1.0);
-            let result = evaluate_strategy(
-                &groups,
-                Term::Probability,
-                UserTreatment::Existing(adjustment),
-                lambda,
-                &args,
-            );
-            writeln!(
-                out,
-                "{}\t{:.6}\t{:.6}\t{:.6}\t{}",
-                label, lambda, result.mrr, result.top1, result.count
-            )?;
-        }
-        writeln!(out)?;
-        writeln!(out)?;
+    write!(out, "lambda")?;
+    for strategy in &plot_strategies {
+        write!(out, "\t{}_MRR\t{}_top1", strategy.label, strategy.label)?;
     }
-    for (smoothing, smoothing_label) in Smoothing::ALL {
-        let label = format!("log_probability_{smoothing_label}");
-        let steps = (1.0 / args.lambda_step).ceil() as usize;
-        for step in 0..=steps {
-            let lambda = (step as f64 * args.lambda_step).min(1.0);
-            let result = evaluate_strategy(
-                &groups,
-                Term::LogProbability,
-                UserTreatment::Smoothed(smoothing),
-                lambda,
-                &args,
-            );
-            writeln!(
-                out,
-                "{}\t{:.6}\t{:.6}\t{:.6}\t{}",
-                label, lambda, result.mrr, result.top1, result.count
-            )?;
+    writeln!(out)?;
+
+    let steps = (1.0 / args.lambda_step).ceil() as usize;
+    for step in 0..=steps {
+        let lambda = (step as f64 * args.lambda_step).min(1.0);
+        write!(out, "{lambda:.6}")?;
+        for strategy in &plot_strategies {
+            let result = evaluate_strategy(&groups, strategy, lambda, &args);
+            write!(out, "\t{:.6}\t{:.6}", result.mrr, result.top1)?;
         }
-        writeln!(out)?;
         writeln!(out)?;
     }
     out.flush()?;

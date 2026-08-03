@@ -3,18 +3,8 @@ if (!exists("outputfile")) outputfile = "reranking.svg"
 if (!exists("interactive")) interactive = 0
 if (!exists("metric")) metric = 3
 
-array labels[10] = [ \
-    "prob: none", \
-    "prob: correction", \
-    "prob: sigmoid", \
-    "prob: entropy", \
-    "prob: sigmoid + correction", \
-    "prob: entropy + correction", \
-    "log prob: smooth correction", \
-    "log prob: smooth fixed", \
-    "log prob: smooth sigmoid", \
-    "log prob: smooth entropy" \
-]
+stats datafile every ::1 nooutput
+strategy_count = (STATS_columns - 1) / 2
 
 set xlabel "lambda (AI weight)"
 set xrange [0:1]
@@ -27,7 +17,9 @@ if (interactive) {
     metric_title = metric == 4 ? "Top-1 rate" : "MRR"
     set terminal qt title metric_title size 1600,900 enhanced font "sans,12" replotonresize
     set title metric_title
-    plot for [i=0:9] datafile index i using 2:(column(metric)) with lines title labels[i + 1]
+    metric_offset = metric == 4 ? 3 : 2
+    plot for [i=0:strategy_count-1] datafile using 1:(column(metric_offset + 2*i)) \
+        with lines title columnhead(metric_offset + 2*i)
 
     print "Interactive controls:"
     print "  click a legend entry: toggle the series"
@@ -40,10 +32,12 @@ if (interactive) {
     set multiplot layout 2,1 title "Reranking strategies"
 
     set title "MRR"
-    plot for [i=0:9] datafile index i using 2:3 with lines title labels[i + 1]
+    plot for [i=0:strategy_count-1] datafile using 1:(column(2 + 2*i)) \
+        with lines title columnhead(2 + 2*i)
 
     set title "Top-1 rate"
-    plot for [i=0:9] datafile index i using 2:4 with lines title labels[i + 1]
+    plot for [i=0:strategy_count-1] datafile using 1:(column(3 + 2*i)) \
+        with lines title columnhead(3 + 2*i)
 
     unset multiplot
 }
