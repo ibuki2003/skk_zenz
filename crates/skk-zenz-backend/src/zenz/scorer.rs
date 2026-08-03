@@ -87,11 +87,13 @@ impl ZenzScorer {
                 if output_tokens.is_empty() {
                     bail!("空のoutputは評価できません");
                 }
+                let mut scored_tokens = output_tokens.clone();
+                scored_tokens.push(model.token_eos());
                 let mut evaluation_tokens = model
                     .str_to_token(&OUTPUT_TAG.to_string(), AddBos::Never)
                     .context("output tagのtoken化に失敗しました")?;
                 let output_offset = evaluation_tokens.len();
-                evaluation_tokens.extend_from_slice(&output_tokens);
+                evaluation_tokens.extend_from_slice(&scored_tokens);
                 let sequence_context_size =
                     llama_context.n_ctx() as usize / self.parallel_sequences as usize;
                 if cached_len + evaluation_tokens.len() > sequence_context_size {
@@ -109,7 +111,7 @@ impl ZenzScorer {
                     .context("候補のdecodeに失敗しました")?;
 
                 let mut loss = 0.0;
-                for (index, token) in output_tokens.iter().enumerate() {
+                for (index, token) in scored_tokens.iter().enumerate() {
                     let logits = llama_context.get_logits_ith((output_offset + index - 1) as i32);
                     loss += token_loss(logits, *token);
                 }
@@ -155,24 +157,31 @@ impl ZenzScorer {
                     if output_tokens.is_empty() {
                         bail!("空のoutputは評価できません");
                     }
+                    let mut scored_tokens = output_tokens.clone();
+                    scored_tokens.push(model.token_eos());
                     let mut evaluation_tokens = output_tag.clone();
                     let output_offset = evaluation_tokens.len();
-                    evaluation_tokens.extend_from_slice(&output_tokens);
+                    evaluation_tokens.extend_from_slice(&scored_tokens);
                     batch_size += evaluation_tokens.len();
-                    sequences.push((output_tokens, evaluation_tokens, output_offset));
+                    sequences.push((
+                        output_tokens,
+                        scored_tokens,
+                        evaluation_tokens,
+                        output_offset,
+                    ));
                 }
                 let sequence_context_size =
                     llama_context.n_ctx() as usize / self.parallel_sequences as usize;
                 if sequences
                     .iter()
-                    .any(|(_, tokens, _)| cached_len + tokens.len() > sequence_context_size)
+                    .any(|(_, _, tokens, _)| cached_len + tokens.len() > sequence_context_size)
                 {
                     bail!("batch評価token列がsequenceあたりのcontext sizeを超えます");
                 }
 
                 let mut batch = LlamaBatch::new(batch_size, 1);
                 let mut logits_indices = Vec::with_capacity(sequences.len());
-                for (sequence_index, (_, evaluation_tokens, output_offset)) in
+                for (sequence_index, (_, _, evaluation_tokens, output_offset)) in
                     sequences.iter().enumerate()
                 {
                     let sequence_id = i32::try_from(sequence_index + 1)
@@ -201,11 +210,13 @@ impl ZenzScorer {
                     .context("候補batchのdecodeに失敗しました")?;
 
                 let mut scores = Vec::with_capacity(sequences.len());
-                for (sequence_index, ((output_tokens, evaluation_tokens, _), indices)) in
-                    sequences.iter().zip(&logits_indices).enumerate()
+                for (
+                    sequence_index,
+                    ((output_tokens, scored_tokens, evaluation_tokens, _), indices),
+                ) in sequences.iter().zip(&logits_indices).enumerate()
                 {
                     let mut loss = 0.0;
-                    for (token, index) in output_tokens.iter().zip(indices) {
+                    for (token, index) in scored_tokens.iter().zip(indices) {
                         loss += token_loss(llama_context.get_logits_ith(*index), *token);
                     }
                     scores.push(Score {

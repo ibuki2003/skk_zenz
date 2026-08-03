@@ -7,7 +7,6 @@ use crate::kana_script::hiragana_to_katakana;
 pub(super) const OUTPUT_TAG: char = '\u{EE01}';
 const INPUT_TAG: char = '\u{EE00}';
 const CONTEXT_TAG: char = '\u{EE02}';
-const BOS_TOKEN: LlamaToken = LlamaToken(2);
 
 pub(super) fn prompt_tokens(
     model: &LlamaModel,
@@ -21,11 +20,9 @@ pub(super) fn prompt_tokens(
     } else {
         format!("{CONTEXT_TAG}{context}{INPUT_TAG}{input}")
     };
-    let mut tokens = model
-        .str_to_token(&prompt, AddBos::Never)
-        .with_context(|| format!("promptのtoken化に失敗しました: {prompt:?}"))?;
-    tokens.insert(0, BOS_TOKEN);
-    Ok(tokens)
+    model
+        .str_to_token(&prompt, AddBos::Always)
+        .with_context(|| format!("promptのtoken化に失敗しました: {prompt:?}"))
 }
 
 fn suffix_chars(value: &str, max_chars: usize) -> String {
