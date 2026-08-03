@@ -32,7 +32,6 @@ impl Composition {
         let mut value = self.output.clone();
         let conversion = rule.convert(&self.pending, mode);
         value.push_str(&conversion.output);
-        value.push_str(&conversion.preedit);
         value
     }
 

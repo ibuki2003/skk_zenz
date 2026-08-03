@@ -190,6 +190,18 @@ mod tests {
     }
 
     #[test]
+    fn finishing_composition_discards_unresolved_romaji() {
+        let rule = rule();
+        let mut composition = Composition::default();
+        for input in ["k", "a", "x", "i", "k"] {
+            composition.push(&rule, input, KanaMode::Hiragana);
+        }
+
+        assert_eq!(composition.display(), "かしk");
+        assert_eq!(composition.finish(&rule, KanaMode::Hiragana), "かし");
+    }
+
+    #[test]
     fn preedit_and_selection_have_skk_markers() {
         let mut state = InputState {
             phase: Phase::Preedit {
