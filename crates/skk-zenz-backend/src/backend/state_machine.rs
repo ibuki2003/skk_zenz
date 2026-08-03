@@ -97,22 +97,7 @@ impl Backend {
                 };
                 return Ok((true, None));
             }
-            Some("special-midasi")
-                if matches!(
-                    self.input_state.mode,
-                    InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana
-                ) =>
-            {
-                let commit = self.finish_direct();
-                if let Some(commit) = &commit {
-                    self.input_state.context.push_str(commit);
-                }
-                self.input_state.phase = Phase::Preedit {
-                    stem: Composition::from_output(">".to_owned()),
-                    okuri: None,
-                };
-                return Ok((true, commit));
-            }
+            Some("special-midasi") => return Ok((false, None)),
             Some("abbrev")
                 if should_start_abbrev(
                     command,
@@ -392,6 +377,17 @@ impl Backend {
                     self.input_state.context.push_str(&output);
                     self.input_state.phase = Phase::Direct;
                     return Ok((true, Some(output)));
+                }
+            }
+            Some("special-midasi") => {
+                if let Some(candidate) = candidates.get(cursor).cloned() {
+                    self.confirm_candidate(&input, okuri.as_deref(), &candidate)?;
+                    self.input_state.context.push_str(&candidate.output);
+                    self.input_state.phase = Phase::Preedit {
+                        stem: Composition::from_output(">".to_owned()),
+                        okuri: None,
+                    };
+                    return Ok((true, Some(candidate.output)));
                 }
             }
             _ if should_forward_after_selection(&event, command) => {
