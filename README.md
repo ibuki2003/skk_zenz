@@ -4,6 +4,14 @@ SKKを現代的にしたいな!というモチベでPoCを作ってみます
 
 https://github.com/user-attachments/assets/b3436241-f0a0-4302-b3a5-362a261e35b7
 
+## index
+
+README以外のドキュメントもあります
+
+- [reranking.md](./docs/reranking.md) ソート順序
+- [data-flow.md](./docs/data-flow.md) モジュール概念図
+- [configuration.md](./docs/configuration.md) 設定ファイル
+
 ## アピールポイント (独自の機能)
 
 - Zenzaiを利用
@@ -19,8 +27,11 @@ https://github.com/user-attachments/assets/b3436241-f0a0-4302-b3a5-362a261e35b7
 
 ### ソート順序
 
-使いやすさに直結するはずで、要検証&調整。
-設定で変更できます。デフォルトでは、まずユーザ辞書にあるかどうかで二分し、okuri-ariのときはZenzによるソートを使用、それ以外ではfrequencyを使用。
+frequency情報とZenzによる評価値を組み合わせるハイブリッド スコアを用いて、候補をソートしている。
+
+作者による実験では、MRR (Mean Reciprocal Rank)は、baseline(original SKK)で0.952であったものが、最大0.97まで上昇する。
+
+詳しくは [./docs/reranking.md] を参照してください。
 
 ### 速度
 
@@ -49,8 +60,6 @@ CPUだとスレッド数が結構効きます
 - 辞書内Lisp式などの特殊変換（数値変換は実装済み）
 - skkserv、CDB辞書
 - system/user辞書の自動reload監視(?)
-- 性能検証
-  適当なテキストを用意して、オリジナル実装とのspace押下回数とか比較するんかな? 知らんけど
 
 ## 構成
 
@@ -87,6 +96,10 @@ backendのコア機能を確認する最低限のcli
 `$XDG_CONFIG_HOME/skk-zenz/config.toml`
 （通常は`~/.config/skk-zenz/config.toml`）を読みます。
 
+ユーザ辞書は同じディレクトリの`user.sqlite3`です
+
+サンプル:
+
 ```toml
 huggingface = "Miwa-Keita/zenz-v3.2-small-gguf/ggml-model-Q5_K_M.gguf"
 #model_path = "models/zenz-v3.2-xsmall-Q5_K_M.gguf"
@@ -99,25 +112,14 @@ gpu_layers = 999
 recency_half_life_days = 14.0
 
 [candidate_order]
-okuri_ari = ["from_user", "ai_score"]
-okuri_nasi = ["from_user", "recency"]
-abbrev = ["from_user", "recency"]
-prefix_suffix = ["from_user", "recency"]
+okuri_ari = "user_first_ai_score"
+okuri_nasi = "recency"
+abbrev = "recency"
+prefix_suffix = "recency"
+mixture_lambda = 0.5
 ```
 
-ユーザ辞書は同じディレクトリの`user.sqlite3`
-候補の使用頻度は時間とともに指数減衰し、`recency_half_life_days`で半減期を日数指定できます。
-候補順は`candidate_order`の各listへ優先順に`from_user`、`recency`、`ai_score`を指定します。
-`prefix_suffix`は、`>`で始まるprefix見出しと`>`で終わるsuffix見出しの両方に適用されます。
-`ai_score`を含む種類の変換だけzenzによるスコアリングを行います。
-`special-midasi`に割り当てたキー（libskkのデフォルトkeymapでは`>`）は、
-通常入力中には`>`から始まる見出し入力を開始し、見出し入力中には末尾へ`>`を加えて変換を開始します。
-system辞書は`~/.config/skk-zenz/dictionary_list`へ1行1ファイルで指定 相対パスも使えます
-
-このファイルがない場合は `$XDG_DATA_HOME/fcitx5/skk/dictionary_list`を代わりに使用します
-
-rom-kana ruleは、`~/.config/skk-zenz/rules`のほか、`~/.config/libskk/rules`とコンパイル時の`SKK_RULES_PATH`も探索対象とします
-(コンパイル時に`SKK_RULES_PATH`がなければ`/usr/share/libskk/rules`を使用します)
+項目詳細: TODO
 
 ## build
 
