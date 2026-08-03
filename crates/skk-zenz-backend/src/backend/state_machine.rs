@@ -732,7 +732,7 @@ mod tests {
             &mut candidates,
             &mut cursor,
             candidate("first", 1.0),
-            &[CandidateSortKey::AiScore],
+            CandidateOrder::AiScore,
             true,
         );
 
@@ -767,7 +767,7 @@ mod tests {
             &mut candidates,
             &mut cursor,
             candidate("first", 1.0),
-            &[CandidateSortKey::AiScore],
+            CandidateOrder::AiScore,
             false,
         );
 

@@ -4,12 +4,12 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::candidate::{Candidate, DictionaryCandidate};
-use crate::config::{CandidateOrderConfig, CandidateSortKey};
+use crate::config::{CandidateOrder, CandidateOrderConfig};
 use crate::dictionary::{
     Dictionary, SkkFileDictionary, UserDictionary, open_system_dictionaries, unix_timestamp,
 };
 use crate::numeric::NumericInput;
-use crate::scoring::{self, DefaultStrategy, ScoringStrategy};
+use crate::scoring::{self, ScoringStrategy};
 
 /// Owns the reusable state and behavior required to produce and rank conversion candidates.
 ///
@@ -53,19 +53,19 @@ impl<U: UserDictionary> ConversionCore<U> {
     }
 
     /// Returns the configured sort order for a standard conversion request.
-    pub fn lookup_order(&self, input: &str, okuri: Option<&str>) -> &[CandidateSortKey] {
+    pub fn lookup_order(&self, input: &str, okuri: Option<&str>) -> CandidateOrder {
         if is_prefix_or_suffix(input) {
-            &self.candidate_order.prefix_suffix
+            self.candidate_order.prefix_suffix
         } else if okuri.is_some() {
-            &self.candidate_order.okuri_ari
+            self.candidate_order.okuri_ari
         } else {
-            &self.candidate_order.okuri_nasi
+            self.candidate_order.okuri_nasi
         }
     }
 
     /// Returns the configured sort order for an abbreviation conversion.
-    pub fn abbrev_order(&self) -> &[CandidateSortKey] {
-        &self.candidate_order.abbrev
+    pub fn abbrev_order(&self) -> CandidateOrder {
+        self.candidate_order.abbrev
     }
 
     /// Generates candidates using the current wall-clock time for frequency decay.
@@ -134,15 +134,12 @@ impl<U: UserDictionary> ConversionCore<U> {
     }
 
     /// Sorts candidates according to the supplied configured key priority.
-    pub fn rerank_candidates(&self, candidates: &mut [Candidate], order: &[CandidateSortKey]) {
-        scoring::rerank_candidates(candidates, &DefaultStrategy { order });
+    pub fn rerank_candidates(&self, candidates: &mut [Candidate], order: CandidateOrder) {
+        scoring::rerank_by_order(candidates, order, self.candidate_order.mixture_lambda);
     }
 
     /// Sorts candidates using a caller-supplied scoring strategy.
-    pub fn rerank_candidates_with(
-        candidates: &mut [Candidate],
-        strategy: &impl ScoringStrategy,
-    ) {
+    pub fn rerank_candidates_with(candidates: &mut [Candidate], strategy: &impl ScoringStrategy) {
         scoring::rerank_candidates(candidates, strategy);
     }
 
@@ -248,7 +245,6 @@ impl<U: UserDictionary> ConversionCore<U> {
                 })
         })
     }
-
 }
 
 /// Reports whether a dictionary key denotes prefix or suffix conversion.
@@ -293,16 +289,10 @@ mod tests {
         let accurate = candidate(Some(1.0), 1.0);
         let mut candidates = vec![accurate.clone(), frequent.clone()];
 
-        core.rerank_candidates(
-            &mut candidates,
-            &[CandidateSortKey::Recency, CandidateSortKey::AiScore],
-        );
+        core.rerank_candidates(&mut candidates, CandidateOrder::RecencyThenAiScore);
         assert_eq!(candidates, [frequent.clone(), accurate.clone()]);
 
-        core.rerank_candidates(
-            &mut candidates,
-            &[CandidateSortKey::AiScore, CandidateSortKey::Recency],
-        );
+        core.rerank_candidates(&mut candidates, CandidateOrder::AiScore);
         assert_eq!(candidates, [accurate, frequent]);
     }
 

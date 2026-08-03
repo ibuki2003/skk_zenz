@@ -158,7 +158,7 @@ pub(super) fn merge_reranked_candidate<U: UserDictionary>(
     candidates: &mut Vec<Candidate>,
     cursor: &mut usize,
     candidate: Candidate,
-    order: &[CandidateSortKey],
+    order: CandidateOrder,
     preserve_selection: bool,
 ) {
     let selected = candidates

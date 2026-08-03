@@ -1,4 +1,5 @@
 use super::*;
+use crate::candidate::CandidateSource;
 
 impl Backend {
     pub(super) fn current_order_uses_ai_score(&self) -> bool {
@@ -9,7 +10,7 @@ impl Backend {
             Phase::Abbrev { .. } => self.conversion.abbrev_order(),
             Phase::Direct | Phase::Selecting { .. } => return false,
         };
-        order.contains(&CandidateSortKey::AiScore)
+        order.uses_ai_score()
     }
 
     pub fn lookup(
@@ -20,11 +21,11 @@ impl Backend {
     ) -> Result<Vec<Candidate>> {
         #[cfg(debug_assertions)]
         eprintln!("[BACKEND] lookup context={context:?} input={input:?} okuri={okuri:?}");
-        let order = self.conversion.lookup_order(input, okuri).to_vec();
+        let order = self.conversion.lookup_order(input, okuri);
         #[cfg(debug_assertions)]
         eprintln!("[BACKEND] lookup order={order:?}");
         let candidates = self.conversion.lookup(input, okuri)?;
-        let candidates = self.rerank_candidates(context, input, candidates, &order)?;
+        let candidates = self.rerank_candidates(context, input, candidates, order)?;
         #[cfg(debug_assertions)]
         {
             eprint!("[BACKEND] lookup -> ");
@@ -39,12 +40,12 @@ impl Backend {
     }
 
     pub(super) fn lookup_abbrev(&mut self, input: &str) -> Result<Vec<Candidate>> {
-        let order = self.conversion.abbrev_order().to_vec();
+        let order = self.conversion.abbrev_order();
         #[cfg(debug_assertions)]
         eprintln!("[BACKEND] abbr lookup order={order:?}");
         let context = self.input_state.context.clone();
         let candidates = self.conversion.lookup_abbrev(input)?;
-        self.rerank_candidates(&context, input, candidates, &order)
+        self.rerank_candidates(&context, input, candidates, order)
     }
 
     pub(super) fn rerank_candidates(
@@ -52,22 +53,25 @@ impl Backend {
         context: &str,
         input: &str,
         mut candidates: Vec<Candidate>,
-        order: &[CandidateSortKey],
+        order: CandidateOrder,
     ) -> Result<Vec<Candidate>> {
-        let initial_order: Vec<_> = order
-            .iter()
-            .copied()
-            .filter(|key| *key != CandidateSortKey::AiScore)
-            .collect();
-        self.conversion
-            .rerank_candidates(&mut candidates, &initial_order);
+        match order {
+            CandidateOrder::UserFirstAiScore => {
+                candidates.sort_by_key(|candidate| candidate.source != CandidateSource::User);
+            }
+            CandidateOrder::RecencyThenAiScore | CandidateOrder::Mixture => {
+                self.conversion
+                    .rerank_candidates(&mut candidates, CandidateOrder::Recency);
+            }
+            CandidateOrder::Recency | CandidateOrder::AiScore => {}
+        }
         self.conversion
             .deduplicate_candidate_outputs(&mut candidates);
         if candidates.is_empty() {
             self.active_rerank = None;
             return Ok(candidates);
         }
-        if !order.contains(&CandidateSortKey::AiScore) {
+        if !order.uses_ai_score() {
             self.active_rerank = None;
             return Ok(candidates);
         }
@@ -78,7 +82,7 @@ impl Backend {
         self.conversion.rerank_candidates(&mut initial, order);
         self.active_rerank = Some(ActiveRerank {
             generation,
-            order: order.to_vec(),
+            order,
             selection_touched: false,
             evaluated,
             total,

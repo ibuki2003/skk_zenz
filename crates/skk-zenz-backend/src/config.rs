@@ -12,7 +12,7 @@ mod schema;
 use dictionary_list::load_dictionary_paths;
 use paths::{config_dir, resolve_path, rule_search_paths};
 use schema::ConfigFile;
-pub use schema::{CandidateOrderConfig, CandidateSortKey, Fcitx5Config};
+pub use schema::{CandidateOrder, CandidateOrderConfig, Fcitx5Config};
 
 const CONFIG_FILE: &str = "config.toml";
 const USER_DICTIONARY: &str = "user.sqlite3";
@@ -127,26 +127,25 @@ mod tests {
             model_path = "model.gguf"
 
             [candidate_order]
-            okuri_ari = ["ai_score", "recency"]
-            okuri_nasi = ["from_user"]
-            abbrev = []
-            prefix_suffix = ["recency"]
+            okuri_ari = "recency_then_ai_score"
+            okuri_nasi = "user_first_ai_score"
+            abbrev = "ai_score"
+            prefix_suffix = "mixture"
+            mixture_lambda = 0.25
             "#,
         )
         .unwrap();
         assert_eq!(
             file.candidate_order.okuri_ari,
-            [CandidateSortKey::AiScore, CandidateSortKey::Recency]
+            CandidateOrder::RecencyThenAiScore
         );
         assert_eq!(
             file.candidate_order.okuri_nasi,
-            [CandidateSortKey::FromUser]
+            CandidateOrder::UserFirstAiScore
         );
-        assert!(file.candidate_order.abbrev.is_empty());
-        assert_eq!(
-            file.candidate_order.prefix_suffix,
-            [CandidateSortKey::Recency]
-        );
+        assert_eq!(file.candidate_order.abbrev, CandidateOrder::AiScore);
+        assert_eq!(file.candidate_order.prefix_suffix, CandidateOrder::Mixture);
+        assert_eq!(file.candidate_order.mixture_lambda, 0.25);
         file.candidate_order.validate().unwrap();
     }
 
@@ -170,9 +169,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicate_candidate_order_keys() {
+    fn rejects_invalid_mixture_lambda() {
         let order = CandidateOrderConfig {
-            okuri_ari: vec![CandidateSortKey::Recency, CandidateSortKey::Recency],
+            mixture_lambda: f64::NAN,
             ..CandidateOrderConfig::default()
         };
         assert!(order.validate().is_err());

@@ -17,7 +17,7 @@ pub mod zenz;
 
 pub use backend::Backend;
 pub use candidate::{Candidate, CandidateSource, DictionaryCandidate};
-pub use config::{BackendConfig, CandidateOrderConfig, CandidateSortKey, Fcitx5Config};
+pub use config::{BackendConfig, CandidateOrder, CandidateOrderConfig, Fcitx5Config};
 pub use conversion::ConversionCore;
 pub use dictionary::{MemoryUserDictionary, UserDictionary};
 pub use input::{InputEvent, InputMode, InputUpdate};

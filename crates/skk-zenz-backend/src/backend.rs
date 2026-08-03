@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 
 use crate::candidate::Candidate;
-use crate::config::{BackendConfig, CandidateSortKey, Fcitx5Config};
+use crate::config::{BackendConfig, CandidateOrder, Fcitx5Config};
 use crate::config_watcher::ConfigWatcher;
 use crate::conversion::ConversionCore;
 use crate::conversion_history;
@@ -18,7 +18,7 @@ use crate::zenz::{ModelDownloadEventHandler, RerankUpdate, Score, ZenzWorker};
 #[derive(Clone, Debug)]
 struct ActiveRerank {
     generation: u64,
-    order: Vec<CandidateSortKey>,
+    order: CandidateOrder,
     selection_touched: bool,
     evaluated: usize,
     total: usize,

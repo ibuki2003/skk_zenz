@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -6,48 +5,51 @@ use serde::Deserialize;
 
 #[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CandidateSortKey {
-    FromUser,
+pub enum CandidateOrder {
     Recency,
+    UserFirstAiScore,
+    RecencyThenAiScore,
     AiScore,
+    Mixture,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+impl CandidateOrder {
+    pub(crate) const fn uses_ai_score(self) -> bool {
+        !matches!(self, Self::Recency)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CandidateOrderConfig {
-    #[serde(default = "default_sort_order_ai")]
-    pub okuri_ari: Vec<CandidateSortKey>,
-    #[serde(default = "default_sort_order_recency")]
-    pub okuri_nasi: Vec<CandidateSortKey>,
-    #[serde(default = "default_sort_order_recency")]
-    pub abbrev: Vec<CandidateSortKey>,
-    #[serde(default = "default_sort_order_recency")]
-    pub prefix_suffix: Vec<CandidateSortKey>,
+    #[serde(default = "default_order_mixture")]
+    pub okuri_ari: CandidateOrder,
+    #[serde(default = "default_order_mixture")]
+    pub okuri_nasi: CandidateOrder,
+    #[serde(default = "default_order_mixture")]
+    pub abbrev: CandidateOrder,
+    #[serde(default = "default_order_mixture")]
+    pub prefix_suffix: CandidateOrder,
+    #[serde(default = "default_mixture_lambda")]
+    pub mixture_lambda: f64,
 }
 
 impl Default for CandidateOrderConfig {
     fn default() -> Self {
         Self {
-            okuri_ari: default_sort_order_ai(),
-            okuri_nasi: default_sort_order_recency(),
-            abbrev: default_sort_order_recency(),
-            prefix_suffix: default_sort_order_recency(),
+            okuri_ari: default_order_mixture(),
+            okuri_nasi: default_order_mixture(),
+            abbrev: default_order_mixture(),
+            prefix_suffix: default_order_mixture(),
+            mixture_lambda: default_mixture_lambda(),
         }
     }
 }
 
 impl CandidateOrderConfig {
     pub(super) fn validate(&self) -> Result<()> {
-        for (name, order) in [
-            ("okuri_ari", &self.okuri_ari),
-            ("okuri_nasi", &self.okuri_nasi),
-            ("abbrev", &self.abbrev),
-            ("prefix_suffix", &self.prefix_suffix),
-        ] {
-            let mut seen = HashSet::new();
-            if let Some(duplicate) = order.iter().find(|key| !seen.insert(**key)) {
-                anyhow::bail!("candidate_order.{name} に重複があります: {duplicate:?}");
-            }
+        if !self.mixture_lambda.is_finite() || !(0.0..=1.0).contains(&self.mixture_lambda) {
+            anyhow::bail!("candidate_order.mixture_lambda は0以上1以下の有限値にしてください");
         }
         Ok(())
     }
@@ -113,12 +115,12 @@ const fn default_recency_half_life_days() -> f64 {
     14.0
 }
 
-fn default_sort_order_ai() -> Vec<CandidateSortKey> {
-    vec![CandidateSortKey::FromUser, CandidateSortKey::AiScore]
+const fn default_order_mixture() -> CandidateOrder {
+    CandidateOrder::Mixture
 }
 
-fn default_sort_order_recency() -> Vec<CandidateSortKey> {
-    vec![CandidateSortKey::FromUser, CandidateSortKey::Recency]
+const fn default_mixture_lambda() -> f64 {
+    0.2
 }
 
 fn default_rom_kana_rule() -> String {

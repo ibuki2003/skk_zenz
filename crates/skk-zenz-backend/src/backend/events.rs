@@ -83,7 +83,7 @@ impl Backend {
                         candidates,
                         cursor,
                         candidate,
-                        &active.order,
+                        active.order,
                         active.selection_touched,
                     );
                     active.evaluated += 1;

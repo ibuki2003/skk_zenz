@@ -3,10 +3,10 @@ huggingface = "Miwa-Keita/zenz-v3.2-small-gguf/ggml-model-Q5_K_M.gguf"
 rom_kana_rule = "default"
 
 [candidate_order]
-okuri_ari = ["from_user", "ai_score"]
-okuri_nasi = ["from_user", "recency"]
-abbrev = ["from_user", "recency"]
-prefix_suffix = ["from_user", "recency"]
+okuri_ari = "user_first_ai_score"
+okuri_nasi = "recency"
+abbrev = "recency"
+prefix_suffix = "recency"
 
 [frontend.fcitx5]
 page_size = 8
