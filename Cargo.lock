@@ -1151,6 +1151,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "skk-zenz-eval"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hf-hub",
+ "serde",
+ "serde_json",
+ "skk-zenz-backend",
+]
+
+[[package]]
 name = "skk-zenz-fcitx5"
 version = "0.1.0"
 dependencies = [

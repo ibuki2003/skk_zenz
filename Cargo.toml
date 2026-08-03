@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/fcitx5-addon",
     "crates/skk-zenz-backend",
+    "crates/skk-zenz-eval",
 ]
 
 [workspace.package]
