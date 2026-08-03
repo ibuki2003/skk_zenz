@@ -2,9 +2,10 @@
   description = "SKK Zenz";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.crane.url = "github:ipetkov/crane";
 
   outputs =
-    { nixpkgs, ... }:
+    { nixpkgs, crane, ... }:
     let
       forAllSystems = nixpkgs.lib.genAttrs [
         "x86_64-linux"
@@ -16,9 +17,10 @@
         system:
         let
           pkgs = import nixpkgs { inherit system; };
+          craneLib = crane.mkLib pkgs;
         in
         {
-          default = pkgs.callPackage ./default.nix { };
+          default = pkgs.callPackage ./default.nix { inherit craneLib; };
         }
       );
 
