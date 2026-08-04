@@ -14,7 +14,7 @@ pub(super) fn prompt_tokens(
     input: &str,
 ) -> Result<Vec<LlamaToken>> {
     let context = suffix_chars(context, 40);
-    let input = hiragana_to_katakana(input);
+    let input = zenz_input(input);
     let prompt = if context.is_empty() {
         format!("{INPUT_TAG}{input}")
     } else {
@@ -23,6 +23,10 @@ pub(super) fn prompt_tokens(
     model
         .str_to_token(&prompt, AddBos::Always)
         .with_context(|| format!("promptのtoken化に失敗しました: {prompt:?}"))
+}
+
+fn zenz_input(input: &str) -> String {
+    hiragana_to_katakana(&input.replace('>', ""))
 }
 
 fn suffix_chars(value: &str, max_chars: usize) -> String {
@@ -42,5 +46,10 @@ mod tests {
     #[test]
     fn converts_hiragana_only() {
         assert_eq!(hiragana_to_katakana("かなABC"), "カナABC");
+    }
+
+    #[test]
+    fn removes_prefix_and_suffix_markers() {
+        assert_eq!(zenz_input(">せつび>"), "セツビ");
     }
 }
