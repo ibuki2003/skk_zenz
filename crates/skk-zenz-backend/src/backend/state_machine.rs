@@ -135,6 +135,7 @@ impl Backend {
             return Ok((true, Some(output)));
         }
         if is_upper_input(&event, command) {
+            self.input_state.direct_pending.clear();
             let mut stem = Composition::default();
             stem.push(
                 &self.rom_kana_rule,
