@@ -23,7 +23,7 @@ $$
   \mathrm{score}_\mathrm{ai} &= \log(P_\mathrm{ai}), \\
   \mathrm{score}_\mathrm{user} &= g \cdot P_\mathrm{user} + (1-g) \cdot \frac{1}{\mathrm{count\ of\ candidates}}, \\
   g &= H(P_\mathrm{user}), \\
-  lambda &\approx 0.2 \\
+  \lambda &\approx 0.2 \\
 \end{align*}
 $$
 
@@ -54,7 +54,7 @@ $g$の候補はいくつかあって、
 - sigmoid confidence (上位2件の比をsigmoidする)
 - entropy confidence (全件のprobのエントロピーを使用する)
 
-→entropyが性能がよかった、sigmoidもよいが、パラメタ調整が不要なほうが望ましいため。
+→entropyが性能がよかった、sigmoidもよいが、パラメタ調整が不要なほうが望ましい。
 
 
 ![](./rerank_strategies_smooth.svg)
@@ -69,7 +69,7 @@ MRR (Mean Reciprocal Rank)は、baselineで0.952であったものが、最大0.
 
 上に凸な形が見えてうれしい
 
-logprob, smoothing with entropy confidence, $\lambda \approx 0.2$ が最前と判断した。\
+logprob, smoothing with entropy confidence, $\lambda \approx 0.2$ が最善と判断した。\
 このときのMRRは0.971, top-1 rateは0.95 \
 初回のエントリを除くと(frequencyが少なからず意味のある値をとるとき)それぞれ0.99, 0.98。
 
