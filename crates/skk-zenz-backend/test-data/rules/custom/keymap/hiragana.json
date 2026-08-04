@@ -6,7 +6,8 @@
   "define": {
     "keymap": {
       "C-q": null,
-      "S-1": "shift-one"
+      "S-1": "shift-one",
+      "S-Tab": "previous-completion"
     }
   }
 }

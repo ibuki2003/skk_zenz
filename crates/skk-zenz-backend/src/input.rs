@@ -62,6 +62,14 @@ impl CompletionState {
         self.cursor = (self.cursor + 1) % self.candidates.len();
         &self.candidates[self.cursor]
     }
+
+    pub(crate) fn retreat(&mut self) -> &str {
+        self.cursor = self
+            .cursor
+            .checked_sub(1)
+            .unwrap_or(self.candidates.len() - 1);
+        &self.candidates[self.cursor]
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -213,6 +221,8 @@ mod tests {
 
         assert_eq!(completion.advance(), "かなづかい");
         assert_eq!(completion.advance(), "かな");
+        assert_eq!(completion.retreat(), "かなづかい");
+        assert_eq!(completion.retreat(), "かな");
     }
 
     #[test]

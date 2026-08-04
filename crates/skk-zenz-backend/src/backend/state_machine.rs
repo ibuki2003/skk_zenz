@@ -13,7 +13,7 @@ impl Backend {
             &self.rom_kana_rule,
             self.input_state.mode,
         );
-        if command != Some("complete") {
+        if !matches!(command, Some("complete" | "previous-completion")) {
             self.input_state.completion = None;
         }
         if matches!(command, Some("next-candidate" | "previous-candidate"))
@@ -203,24 +203,8 @@ impl Backend {
             Some("next-candidate") => {
                 return self.start_lookup(stem, okuri);
             }
-            Some("complete") if okuri.is_none() => {
-                if let Some(completion) = &mut self.input_state.completion {
-                    stem = Composition::from_output(completion.advance().to_owned());
-                } else {
-                    let prefix = stem.finish(&self.rom_kana_rule, self.input_state.mode.into());
-                    let candidates = if prefix.is_empty() {
-                        Vec::new()
-                    } else {
-                        self.complete(&prefix)?
-                    };
-                    if let Some(first) = candidates.first() {
-                        stem = Composition::from_output(first.clone());
-                        self.input_state.completion = Some(CompletionState {
-                            candidates,
-                            cursor: 0,
-                        });
-                    }
-                }
+            Some(command @ ("complete" | "previous-completion")) if okuri.is_none() => {
+                stem = self.complete_preedit(stem, command == "previous-completion")?;
                 self.input_state.phase = Phase::Preedit { stem, okuri };
                 return Ok((true, None));
             }
@@ -278,6 +262,30 @@ impl Backend {
         }
         self.input_state.phase = Phase::Preedit { stem, okuri };
         Ok((true, None))
+    }
+
+    fn complete_preedit(&mut self, stem: Composition, backwards: bool) -> Result<Composition> {
+        if let Some(completion) = &mut self.input_state.completion {
+            let candidate = if backwards {
+                completion.retreat()
+            } else {
+                completion.advance()
+            };
+            return Ok(Composition::from_output(candidate.to_owned()));
+        }
+
+        let prefix = stem.finish(&self.rom_kana_rule, self.input_state.mode.into());
+        if prefix.is_empty() {
+            return Ok(stem);
+        }
+        let candidates = self.complete(&prefix)?;
+        if candidates.is_empty() {
+            return Ok(stem);
+        }
+        let cursor = if backwards { candidates.len() - 1 } else { 0 };
+        let candidate = candidates[cursor].clone();
+        self.input_state.completion = Some(CompletionState { candidates, cursor });
+        Ok(Composition::from_output(candidate))
     }
 
     pub(super) fn handle_abbrev(

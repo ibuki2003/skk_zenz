@@ -169,6 +169,10 @@ mod tests {
             Some("uppercase-x")
         );
         assert_eq!(
+            keymap.lookup(&KeyEvent::named("Tab", Modifiers::SHIFT)),
+            Some("previous-completion")
+        );
+        assert_eq!(
             keymap.lookup(&KeyEvent {
                 text: None,
                 key: Key::Character('q'),
