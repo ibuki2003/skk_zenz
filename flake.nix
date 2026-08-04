@@ -19,8 +19,9 @@
           pkgs = import nixpkgs { inherit system; };
           craneLib = crane.mkLib pkgs;
         in
-        {
+        rec {
           default = pkgs.callPackage ./default.nix { inherit craneLib; };
+          vulkan = default.override { useVulkan = true; };
         }
       );
 

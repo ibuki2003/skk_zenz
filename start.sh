@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-result_dir="$script_dir/result"
+result_dir="$script_dir/result1" # result is for nix, result1 is for local build by ./build.sh
+result_dir="${1:-$result_dir}"
 
 fcitx_command="$(command -v fcitx5)"
 fcitx_resolved="$(readlink -f -- "$fcitx_command")"
