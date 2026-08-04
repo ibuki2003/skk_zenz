@@ -20,8 +20,10 @@
           craneLib = crane.mkLib pkgs;
         in
         rec {
-          default = pkgs.callPackage ./default.nix { inherit craneLib; };
-          vulkan = default.override { useVulkan = true; };
+          skkzenz-fcitx5 = pkgs.callPackage ./default.nix { inherit craneLib; };
+          skkzenz-fcitx5-vulkan = skkzenz-fcitx5.override { useVulkan = true; };
+
+          default = skkzenz-fcitx5;
         }
       );
 
