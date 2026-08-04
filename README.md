@@ -53,10 +53,6 @@ CPUだとスレッド数が結構効きます
 
 ## roadmap (todo)
 
-優先度順:
-
-- nixでビルドしてhome-managerから呼べるようにする
-- `complete()`による見出し補完
 - 辞書内Lisp式などの特殊変換（数値変換は実装済み）
 - skkserv、CDB辞書
 - system/user辞書の自動reload監視(?)
