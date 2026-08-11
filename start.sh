@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-result_dir="$script_dir/result1" # result is for nix, result1 is for local build by ./build.sh
-result_dir="${1:-$result_dir}"
+result_dir="${1:-$script_dir/result1}" # result is for nix, result1 is for local build by ./build.sh
+result_dir="$(realpath -- "$result_dir")"
+echo "using $result_dir"
+if [[ ! -d "$result_dir" ]]; then
+    echo "error: $result_dir is not a directory"
+    exit 1
+fi
 
 fcitx_command="$(command -v fcitx5)"
 fcitx_resolved="$(readlink -f -- "$fcitx_command")"
