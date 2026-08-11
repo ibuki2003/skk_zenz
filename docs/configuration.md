@@ -28,6 +28,7 @@ libskkのものも参照できます
 
 候補順は`candidate_order`の各項目へ
 `mixture`は候補集合内でAIスコアと使用頻度を確率へ正規化し、使用頻度をentropy confidenceで平滑化してから、両者の対数確率を`mixture_lambda`で合成します。
+0.0でfrequency only, 1.0でai only
 
 ### `context_size`, `threads`, `gpu_layers`
 
