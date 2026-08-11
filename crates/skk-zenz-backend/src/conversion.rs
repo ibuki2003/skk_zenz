@@ -6,7 +6,8 @@ use anyhow::Result;
 use crate::candidate::{Candidate, DictionaryCandidate};
 use crate::config::{CandidateOrder, CandidateOrderConfig};
 use crate::dictionary::{
-    Dictionary, SkkFileDictionary, UserDictionary, open_system_dictionaries, unix_timestamp,
+    Dictionary, DictionaryFingerprint, SkkFileDictionary, UserDictionary, open_system_dictionaries,
+    system_dictionary_fingerprints, unix_timestamp,
 };
 use crate::numeric::NumericInput;
 use crate::scoring::{self, ScoringStrategy};
@@ -17,6 +18,7 @@ use crate::scoring::{self, ScoringStrategy};
 /// supplying different user-dictionary implementations and AI scoring drivers.
 pub struct ConversionCore<U> {
     system_dictionaries: Vec<SkkFileDictionary>,
+    system_dictionary_fingerprints: Vec<DictionaryFingerprint>,
     user_dictionary: U,
     candidate_order: CandidateOrderConfig,
 }
@@ -28,18 +30,30 @@ impl<U: UserDictionary> ConversionCore<U> {
         user_dictionary: U,
         candidate_order: CandidateOrderConfig,
     ) -> Result<Self> {
+        let (system_dictionaries, system_dictionary_fingerprints) =
+            load_system_dictionaries(system_dictionary_paths)?;
         Ok(Self {
-            system_dictionaries: open_system_dictionaries(system_dictionary_paths)?,
+            system_dictionaries,
+            system_dictionary_fingerprints,
             user_dictionary,
             candidate_order,
         })
     }
 
-    /// Replaces system dictionaries after loading every new dictionary successfully.
-    pub(crate) fn reload_system_dictionaries(&mut self, paths: &[impl AsRef<Path>]) -> Result<()> {
-        let dictionaries = open_system_dictionaries(paths)?;
+    /// Reuses unchanged dictionaries, or replaces all of them after a successful reload.
+    /// Returns whether the dictionaries were replaced.
+    pub(crate) fn reload_system_dictionaries(
+        &mut self,
+        paths: &[impl AsRef<Path>],
+    ) -> Result<bool> {
+        let fingerprints = system_dictionary_fingerprints(paths)?;
+        if fingerprints == self.system_dictionary_fingerprints {
+            return Ok(false);
+        }
+        let (dictionaries, fingerprints) = load_system_dictionaries(paths)?;
         self.system_dictionaries = dictionaries;
-        Ok(())
+        self.system_dictionary_fingerprints = fingerprints;
+        Ok(true)
     }
 
     /// Updates conversion ordering without changing already generated candidates.
@@ -261,6 +275,19 @@ impl<U: UserDictionary> ConversionCore<U> {
     }
 }
 
+fn load_system_dictionaries(
+    paths: &[impl AsRef<Path>],
+) -> Result<(Vec<SkkFileDictionary>, Vec<DictionaryFingerprint>)> {
+    let before = system_dictionary_fingerprints(paths)?;
+    let dictionaries = open_system_dictionaries(paths)?;
+    let after = system_dictionary_fingerprints(paths)?;
+    anyhow::ensure!(
+        before == after,
+        "読込中にsystem辞書が変更されました。再度読み込んでください"
+    );
+    Ok((dictionaries, after))
+}
+
 /// Reports whether a dictionary key denotes prefix or suffix conversion.
 fn is_prefix_or_suffix(input: &str) -> bool {
     input.starts_with('>') || input.ends_with('>')
@@ -268,6 +295,8 @@ fn is_prefix_or_suffix(input: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::candidate::CandidateSource;
     use crate::dictionary::MemoryUserDictionary;
@@ -278,6 +307,34 @@ mod tests {
         assert!(is_prefix_or_suffix("接尾>"));
         assert!(!is_prefix_or_suffix("通常"));
         assert!(!is_prefix_or_suffix("途>中"));
+    }
+
+    #[test]
+    fn reuses_unchanged_system_dictionaries() {
+        let directory =
+            std::env::temp_dir().join(format!("skk-zenz-dictionary-cache-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("dictionary");
+        fs::write(&path, ";; okuri-nasi entries.\nかな /仮名/\n").unwrap();
+        let mut core = ConversionCore::load(
+            std::slice::from_ref(&path),
+            MemoryUserDictionary::new(1.0),
+            CandidateOrderConfig::default(),
+        )
+        .unwrap();
+
+        assert!(
+            !core
+                .reload_system_dictionaries(std::slice::from_ref(&path))
+                .unwrap()
+        );
+        fs::write(&path, ";; okuri-nasi entries.\nかな /仮名/かな/\n").unwrap();
+        assert!(
+            core.reload_system_dictionaries(std::slice::from_ref(&path))
+                .unwrap()
+        );
+
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
