@@ -1,15 +1,22 @@
-huggingface = "Miwa-Keita/zenz-v3.2-small-gguf/ggml-model-Q5_K_M.gguf"
+# 値はすべてデフォルト値であり、省略が可能です。
+# 詳しくは /docs/cofiguration.md を参照してください。
 
+huggingface = "Miwa-Keita/zenz-v3.2-small-gguf/ggml-model-Q5_K_M.gguf"
 rom_kana_rule = "default"
+context_size = 1024
+gpu_layers = 999
+recency_half_life_days = 14.0
+conversion_history = false
 
 [candidate_order]
-okuri_ari = "user_first_ai_score"
-okuri_nasi = "recency"
+okuri_ari = "mixture"
+okuri_nasi = "mixture"
 abbrev = "recency"
-prefix_suffix = "recency"
+prefix_suffix = "mixture"
+mixture_lambda = 0.2
 
 [frontend.fcitx5]
-page_size = 8
+page_size = 9
 candidate_window_threshold = 3
 show_annotations = true
 candidate_key = "digit"

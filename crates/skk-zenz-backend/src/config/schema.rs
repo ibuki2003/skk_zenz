@@ -20,28 +20,23 @@ impl CandidateOrder {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct CandidateOrderConfig {
-    #[serde(default = "default_order_mixture")]
     pub okuri_ari: CandidateOrder,
-    #[serde(default = "default_order_mixture")]
     pub okuri_nasi: CandidateOrder,
-    #[serde(default = "default_order_mixture")]
     pub abbrev: CandidateOrder,
-    #[serde(default = "default_order_mixture")]
     pub prefix_suffix: CandidateOrder,
-    #[serde(default = "default_mixture_lambda")]
     pub mixture_lambda: f64,
 }
 
 impl Default for CandidateOrderConfig {
     fn default() -> Self {
         Self {
-            okuri_ari: default_order_mixture(),
-            okuri_nasi: default_order_mixture(),
-            abbrev: default_order_mixture(),
-            prefix_suffix: default_order_mixture(),
-            mixture_lambda: default_mixture_lambda(),
+            okuri_ari: CandidateOrder::Mixture,
+            okuri_nasi: CandidateOrder::Mixture,
+            abbrev: CandidateOrder::Recency,
+            prefix_suffix: CandidateOrder::Mixture,
+            mixture_lambda: 0.2,
         }
     }
 }
@@ -75,58 +70,40 @@ impl Default for Fcitx5Config {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct FrontendConfig {
     pub(super) fcitx5: Fcitx5Config,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
 pub(super) struct ConfigFile {
     pub(super) model_path: Option<PathBuf>,
-    #[serde(default = "default_huggingface_model")]
     pub(super) huggingface: Option<String>,
-    #[serde(default = "default_rom_kana_rule")]
     pub(super) rom_kana_rule: String,
-    #[serde(default = "default_context_size")]
     pub(super) context_size: u32,
     pub(super) threads: Option<i32>,
-    #[serde(default = "default_gpu_layers")]
     pub(super) gpu_layers: u32,
-    #[serde(default = "default_recency_half_life_days")]
     pub(super) recency_half_life_days: f64,
-    #[serde(default)]
     pub(super) conversion_history: bool,
-    #[serde(default)]
     pub(super) candidate_order: CandidateOrderConfig,
-    #[serde(default)]
     pub(super) frontend: FrontendConfig,
 }
 
-const fn default_context_size() -> u32 {
-    1024
-}
-
-const fn default_gpu_layers() -> u32 {
-    999
-}
-
-const fn default_recency_half_life_days() -> f64 {
-    14.0
-}
-
-const fn default_order_mixture() -> CandidateOrder {
-    CandidateOrder::Mixture
-}
-
-const fn default_mixture_lambda() -> f64 {
-    0.2
-}
-
-fn default_rom_kana_rule() -> String {
-    "default".to_owned()
-}
-
-pub(super) fn default_huggingface_model() -> Option<String> {
-    Some("Miwa-Keita/zenz-v3.2-small-gguf/ggml-model-Q5_K_M.gguf".to_owned())
+impl Default for ConfigFile {
+    fn default() -> Self {
+        Self {
+            model_path: None,
+            huggingface: Some("Miwa-Keita/zenz-v3.2-small-gguf/ggml-model-Q5_K_M.gguf".to_owned()),
+            rom_kana_rule: "default".to_owned(),
+            context_size: 1024,
+            threads: None,
+            gpu_layers: 999,
+            recency_half_life_days: 14.0,
+            conversion_history: false,
+            candidate_order: CandidateOrderConfig::default(),
+            frontend: FrontendConfig::default(),
+        }
+    }
 }

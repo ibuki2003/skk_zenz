@@ -94,28 +94,9 @@ backendのコア機能を確認する最低限のcli
 
 ユーザ辞書は同じディレクトリの`user.sqlite3`です
 
-サンプル:
+[サンプル](./config.sample.toml)
 
-```toml
-huggingface = "Miwa-Keita/zenz-v3.2-small-gguf/ggml-model-Q5_K_M.gguf"
-#model_path = "models/zenz-v3.2-xsmall-Q5_K_M.gguf"
-
-rom_kana_rule = "azik_mod"
-
-context_size = 1024
-# threads = 8
-gpu_layers = 999
-recency_half_life_days = 14.0
-
-[candidate_order]
-okuri_ari = "user_first_ai_score"
-okuri_nasi = "recency"
-abbrev = "recency"
-prefix_suffix = "recency"
-mixture_lambda = 0.5
-```
-
-項目詳細: TODO
+項目詳細: [configuration.md](./docs/configuration.md)
 
 ## build
 

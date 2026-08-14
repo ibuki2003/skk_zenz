@@ -93,7 +93,14 @@ impl BackendConfig {
 mod tests {
     use super::*;
     use dictionary_list::{parse_fcitx_dictionary_list, parse_plain_dictionary_list};
-    use schema::default_huggingface_model;
+
+    #[test]
+    fn sample_config_matches_defaults() {
+        let sample: ConfigFile =
+            toml::from_str(include_str!("../../../config.sample.toml")).unwrap();
+
+        assert_eq!(sample, ConfigFile::default());
+    }
 
     #[test]
     fn parses_config_defaults() {
@@ -104,7 +111,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(file.huggingface, default_huggingface_model());
+        assert_eq!(file.huggingface, ConfigFile::default().huggingface);
         assert!(!file.conversion_history);
     }
 
