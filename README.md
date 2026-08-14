@@ -38,6 +38,7 @@ frequency情報とZenzによる評価値を組み合わせるハイブリッド 
 NNを動かすので、どうしても時間がかかります
 
 configのthreadsでZenz評価のスレッド数を指定できます。
+
 CPU評価のほか、Vulkanを使用してGPUやNPUで実行することもできます。(下のほう参照。)
 
 作者環境では、候補**1文字**あたり、
@@ -48,7 +49,7 @@ CPU評価のほか、Vulkanを使用してGPUやNPUで実行することもで�
   - CPU: ~180ms
   - GPU: ~9ms
 
-CPUだとスレッド数が結構効きます
+CPUだとスレッド数が結構効きます。
 マシン性能や消費電力と相談して設定してください。
 
 ## roadmap (todo)
@@ -66,11 +67,13 @@ CPUだとスレッド数が結構効きます
 ### backend
 
 libskkに相当します。候補を辞書ファイルから生成し、結果を返します
+
 configやtable、辞書の参照はすべてbackendがやります
 
 ### zenz inference benchmark
 
 zenzの評価速度とか精度を調べるベンチマークです
+
 操作列をscriptとして入力します
 
 ```text
@@ -117,9 +120,11 @@ nix build
 ### development
 
 開発環境は`nix-shell`またはdirenvで読み込めます。
+
 `build.sh`が`result/`へ成果物を生成します。
 Vulkan backendを使用する場合は、`build.sh -DSKK_ZENZ_VULKAN=ON`で有効化できます。
 この設定はCMakeのbuild directoryに保存され、`OFF`を指定すると無効化できます。
+
 `start.sh`が、fcitx5の探索パスへ`./result/`を追加してfcitx5を起動します (`-r`でreplace running instance)
 設定画面で `SKK Zenz` を追加してください。
 
