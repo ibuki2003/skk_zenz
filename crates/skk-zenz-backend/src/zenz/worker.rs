@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, anyhow};
@@ -7,9 +7,11 @@ use anyhow::{Context, Result, anyhow};
 use crate::candidate::Candidate;
 
 use super::model_resolver::resolve_model;
-use super::{
-    GenerationOptions, GenerationResult, GenerationSession, Score, ZenzConfig, ZenzScorer,
-};
+use super::{GenerationOptions, GenerationResult, Score, ZenzConfig, ZenzScorer};
+
+mod runtime;
+
+use runtime::run_worker;
 
 pub(crate) const INITIAL_RERANK_COUNT: usize = 3;
 
@@ -251,188 +253,4 @@ fn receive_response<T>(receiver: Receiver<Result<T, String>>, operation: &str) -
         Ok(value) => Ok(value),
         Err(error) => Err(anyhow!(error)),
     }
-}
-
-fn run_worker(
-    mut scorer: ZenzScorer,
-    commands: Receiver<WorkerCommand>,
-    updates: Sender<RerankUpdate>,
-    reload_updates: Sender<Result<(), String>>,
-    model_events: ModelDownloadEventHandler,
-) {
-    let mut pending = None;
-    let mut generation_session: Option<GenerationSession> = None;
-    loop {
-        let command = match pending.take() {
-            Some(command) => command,
-            None => match commands.recv() {
-                Ok(command) => command,
-                Err(_) => return,
-            },
-        };
-        match command {
-            WorkerCommand::Clear => {
-                generation_session = None;
-                scorer.clear();
-            }
-            WorkerCommand::Prepare {
-                context,
-                input,
-                response,
-            } => {
-                generation_session = None;
-                let result = scorer
-                    .prepare(&context, &input)
-                    .map_err(|error| format!("{error:#}"));
-                let _ = response.send(result);
-            }
-            WorkerCommand::PrepareSpeculatively {
-                mut context,
-                mut input,
-            } => {
-                generation_session = None;
-                let mut superseded = false;
-                loop {
-                    match commands.try_recv() {
-                        Ok(WorkerCommand::PrepareSpeculatively {
-                            context: newer_context,
-                            input: newer_input,
-                        }) => {
-                            context = newer_context;
-                            input = newer_input;
-                        }
-                        Ok(command) => {
-                            pending = Some(command);
-                            superseded = true;
-                            break;
-                        }
-                        Err(TryRecvError::Disconnected) => return,
-                        Err(TryRecvError::Empty) => break,
-                    }
-                }
-                if !superseded && let Err(_error) = scorer.prepare(&context, &input) {
-                    #[cfg(debug_assertions)]
-                    eprintln!("speculative prepare failed: {_error:#}");
-                }
-            }
-            WorkerCommand::StartGeneration {
-                context,
-                input,
-                output_prefix,
-                options,
-                candidate_count,
-                response,
-            } => {
-                let result = scorer
-                    .start_generation(&context, &input, &output_prefix, options)
-                    .and_then(|mut session| {
-                        let result = scorer.continue_generation(&mut session, candidate_count)?;
-                        generation_session = (!result.finished).then_some(session);
-                        Ok(result)
-                    })
-                    .map_err(|error| format!("{error:#}"));
-                if result.is_err() {
-                    generation_session = None;
-                }
-                let _ = response.send(result);
-            }
-            WorkerCommand::ContinueGeneration {
-                candidate_count,
-                response,
-            } => {
-                let result = generation_session
-                    .as_mut()
-                    .context("続行できる候補生成がありません")
-                    .and_then(|session| scorer.continue_generation(session, candidate_count))
-                    .map_err(|error| format!("{error:#}"));
-                if result.as_ref().is_ok_and(|result| result.finished) || result.is_err() {
-                    generation_session = None;
-                }
-                let _ = response.send(result);
-            }
-            WorkerCommand::CancelGeneration => generation_session = None,
-            WorkerCommand::Reload { config } => {
-                generation_session = None;
-                let result = resolve_model(config, &model_events)
-                    .and_then(|config| scorer.reload(&config))
-                    .map_err(|error| format!("{error:#}"));
-                let _ = reload_updates.send(result);
-            }
-            WorkerCommand::Rerank {
-                generation,
-                context,
-                input,
-                initial,
-                remaining,
-                response,
-            } => {
-                generation_session = None;
-                let initial = score_candidates(&mut scorer, &context, &input, initial);
-                let initial_succeeded = initial.is_ok();
-                if response
-                    .send(initial.map_err(|error| format!("{error:#}")))
-                    .is_err()
-                    || !initial_succeeded
-                {
-                    continue;
-                }
-                for candidate in remaining {
-                    match commands.try_recv() {
-                        Ok(command) => {
-                            pending = Some(command);
-                            break;
-                        }
-                        Err(TryRecvError::Disconnected) => return,
-                        Err(TryRecvError::Empty) => {}
-                    }
-                    match score_candidate(&mut scorer, &context, &input, candidate) {
-                        Ok(candidate) => {
-                            if updates
-                                .send(RerankUpdate::Candidate {
-                                    generation,
-                                    candidate,
-                                })
-                                .is_err()
-                            {
-                                return;
-                            }
-                        }
-                        Err(error) => {
-                            let _ = updates.send(RerankUpdate::Failed {
-                                generation,
-                                error: format!("{error:#}"),
-                            });
-                            break;
-                        }
-                    }
-                }
-                let _ = updates.send(RerankUpdate::Finished { generation });
-            }
-            WorkerCommand::Shutdown => return,
-        }
-    }
-}
-
-fn score_candidates(
-    scorer: &mut ZenzScorer,
-    context: &str,
-    input: &str,
-    candidates: Vec<Candidate>,
-) -> Result<Vec<Candidate>> {
-    candidates
-        .into_iter()
-        .map(|candidate| score_candidate(scorer, context, input, candidate))
-        .collect()
-}
-
-fn score_candidate(
-    scorer: &mut ZenzScorer,
-    context: &str,
-    input: &str,
-    mut candidate: Candidate,
-) -> Result<Candidate> {
-    let score = scorer.score(context, input, &candidate.output)?;
-    candidate.loss = score.loss;
-    candidate.token_count = score.token_count;
-    Ok(candidate)
 }

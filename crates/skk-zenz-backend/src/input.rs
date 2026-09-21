@@ -83,13 +83,16 @@ pub(crate) enum Phase {
     Abbrev {
         input: String,
     },
-    Selecting {
-        input: String,
-        okuri: Option<String>,
-        candidates: Vec<Candidate>,
-        cursor: usize,
-        origin: SelectionOrigin,
-    },
+    Selecting(CandidateSelection),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CandidateSelection {
+    pub(crate) input: String,
+    pub(crate) okuri: Option<String>,
+    pub(crate) candidates: Vec<Candidate>,
+    pub(crate) cursor: usize,
+    pub(crate) origin: SelectionOrigin,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,10 +128,10 @@ impl InputState {
     pub(crate) fn preedit(&self) -> String {
         let generated_selection = matches!(
             self.phase,
-            Phase::Selecting {
+            Phase::Selecting(CandidateSelection {
                 origin: SelectionOrigin::RegistrationGeneration,
                 ..
-            }
+            })
         );
         let mut value = match &self.phase {
             Phase::Direct => self.direct_pending.clone(),
@@ -141,9 +144,9 @@ impl InputState {
                 value
             }
             Phase::Abbrev { input } => format!("▽{input}"),
-            Phase::Selecting {
+            Phase::Selecting(CandidateSelection {
                 candidates, cursor, ..
-            } => candidates
+            }) => candidates
                 .get(*cursor)
                 .map(|candidate| format!("▼{}", candidate.output))
                 .unwrap_or_default(),
@@ -166,14 +169,14 @@ impl InputState {
 
     pub(crate) fn candidates(&self) -> Vec<Candidate> {
         match &self.phase {
-            Phase::Selecting { candidates, .. } => candidates.clone(),
+            Phase::Selecting(selection) => selection.candidates.clone(),
             _ => Vec::new(),
         }
     }
 
     pub(crate) fn selected_candidate(&self) -> Option<usize> {
         match &self.phase {
-            Phase::Selecting { cursor, .. } => Some(*cursor),
+            Phase::Selecting(selection) => Some(selection.cursor),
             _ => None,
         }
     }
@@ -260,7 +263,7 @@ mod tests {
             ..InputState::default()
         };
         assert_eq!(state.preedit(), "▽かな");
-        state.phase = Phase::Selecting {
+        state.phase = Phase::Selecting(CandidateSelection {
             input: "かな".to_owned(),
             okuri: None,
             candidates: vec![Candidate {
@@ -276,7 +279,7 @@ mod tests {
             }],
             cursor: 0,
             origin: SelectionOrigin::Preedit,
-        };
+        });
         assert_eq!(state.preedit(), "▼仮名");
     }
 
@@ -332,7 +335,7 @@ mod tests {
     #[test]
     fn generated_selection_replaces_registration_prefix_in_preedit() {
         let state = InputState {
-            phase: Phase::Selecting {
+            phase: Phase::Selecting(CandidateSelection {
                 input: "ふかぼる".to_owned(),
                 okuri: None,
                 candidates: vec![Candidate {
@@ -348,7 +351,7 @@ mod tests {
                 }],
                 cursor: 0,
                 origin: SelectionOrigin::RegistrationGeneration,
-            },
+            }),
             registrations: vec![Registration {
                 input: "ふかぼる".to_owned(),
                 okuri: None,

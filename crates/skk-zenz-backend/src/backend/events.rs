@@ -74,16 +74,13 @@ impl Backend {
                     if active.generation != generation {
                         continue;
                     }
-                    let Phase::Selecting {
-                        candidates, cursor, ..
-                    } = &mut self.input_state.phase
-                    else {
+                    let Phase::Selecting(selection) = &mut self.input_state.phase else {
                         continue;
                     };
                     merge_reranked_candidate(
                         &self.conversion,
-                        candidates,
-                        cursor,
+                        &mut selection.candidates,
+                        &mut selection.cursor,
                         candidate,
                         active.order,
                         active.selection_touched,
@@ -122,13 +119,13 @@ impl Backend {
     }
 
     pub fn rerank_pending(&self) -> bool {
-        self.active_rerank.is_some() && matches!(self.input_state.phase, Phase::Selecting { .. })
+        self.active_rerank.is_some() && matches!(self.input_state.phase, Phase::Selecting(_))
     }
 
     pub(super) fn input_update(&self, consumed: bool, commit: Option<String>) -> InputUpdate {
         let (candidate_window_visible, candidate_page_start) = match &self.input_state.phase {
-            Phase::Selecting { cursor, .. }
-                if *cursor >= self.fcitx5.candidate_window_threshold =>
+            Phase::Selecting(selection)
+                if selection.cursor >= self.fcitx5.candidate_window_threshold =>
             {
                 (true, self.fcitx5.candidate_window_threshold)
             }

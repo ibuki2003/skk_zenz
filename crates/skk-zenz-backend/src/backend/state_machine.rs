@@ -47,28 +47,22 @@ impl Backend {
             Phase::Direct => self.handle_direct(event, command),
             Phase::Preedit { stem, okuri } => self.handle_preedit(event, command, stem, okuri),
             Phase::Abbrev { input } => self.handle_abbrev(event, command, input),
-            Phase::Selecting {
-                input,
-                okuri,
-                candidates,
-                cursor,
-                origin,
-            } => self.handle_selecting(event, command, input, okuri, candidates, cursor, origin),
+            Phase::Selecting(selection) => self.handle_selecting(event, command, selection),
         }
     }
 
     pub(super) fn select_candidate_at(&mut self, index: usize) -> Result<(bool, Option<String>)> {
         let selection = match &self.input_state.phase {
-            Phase::Selecting {
-                input,
-                okuri,
-                candidates,
-                origin,
-                ..
-            } => candidates
-                .get(index)
-                .cloned()
-                .map(|candidate| (input.clone(), okuri.clone(), candidate, *origin)),
+            Phase::Selecting(selection) => {
+                selection.candidates.get(index).cloned().map(|candidate| {
+                    (
+                        selection.input.clone(),
+                        selection.okuri.clone(),
+                        candidate,
+                        selection.origin,
+                    )
+                })
+            }
             _ => None,
         };
         let Some((input, okuri, candidate, origin)) = selection else {
@@ -328,13 +322,13 @@ impl Backend {
                 if candidates.is_empty() {
                     self.begin_registration(input.clone(), None, Phase::Abbrev { input }, None);
                 } else {
-                    self.input_state.phase = Phase::Selecting {
+                    self.input_state.phase = Phase::Selecting(CandidateSelection {
                         input,
                         okuri: None,
                         candidates,
                         cursor: 0,
                         origin: SelectionOrigin::Abbrev,
-                    };
+                    });
                 }
                 return Ok((true, None));
             }
@@ -354,74 +348,72 @@ impl Backend {
         Ok((true, None))
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn handle_selecting(
         &mut self,
         event: KeyEvent,
         command: Option<&str>,
-        input: String,
-        okuri: Option<String>,
-        mut candidates: Vec<Candidate>,
-        mut cursor: usize,
-        origin: SelectionOrigin,
+        mut selection: CandidateSelection,
     ) -> Result<(bool, Option<String>)> {
-        if origin == SelectionOrigin::RegistrationGeneration {
-            return self.handle_registration_generation_selection(
-                event, command, input, okuri, candidates, cursor,
-            );
+        if selection.origin == SelectionOrigin::RegistrationGeneration {
+            return self.handle_registration_generation_selection(event, command, selection);
         }
-        if should_restore_preedit(command, cursor) {
-            self.input_state.phase = selection_source_phase(input, okuri, origin);
+        if should_restore_preedit(command, selection.cursor) {
+            self.input_state.phase =
+                selection_source_phase(selection.input, selection.okuri, selection.origin);
             return Ok((true, None));
         }
         match command {
             Some("next-candidate") => {
                 if let Some(next_cursor) = next_candidate_cursor(
-                    cursor,
-                    candidates.len(),
+                    selection.cursor,
+                    selection.candidates.len(),
                     self.fcitx5.candidate_window_threshold,
                     self.fcitx5.page_size,
                 ) {
-                    cursor = next_cursor;
+                    selection.cursor = next_cursor;
                 } else {
-                    let source_phase = selection_source_phase(input.clone(), okuri.clone(), origin);
-                    let empty_return_phase = Phase::Selecting {
-                        input: input.clone(),
-                        okuri: okuri.clone(),
-                        candidates,
-                        cursor,
-                        origin,
-                    };
-                    self.begin_registration(input, okuri, source_phase, Some(empty_return_phase));
+                    let source_phase = selection_source_phase(
+                        selection.input.clone(),
+                        selection.okuri.clone(),
+                        selection.origin,
+                    );
+                    let input = selection.input.clone();
+                    let okuri = selection.okuri.clone();
+                    self.begin_registration(
+                        input,
+                        okuri,
+                        source_phase,
+                        Some(Phase::Selecting(selection)),
+                    );
                     return Ok((true, None));
                 }
             }
             Some("previous-candidate" | "previous") => {
-                cursor = previous_candidate_cursor(
-                    cursor,
+                selection.cursor = previous_candidate_cursor(
+                    selection.cursor,
                     self.fcitx5.candidate_window_threshold,
                     self.fcitx5.page_size,
                 )
                 .expect("cursor 0 is restored to preedit before this branch");
             }
             Some("purge-candidate") => {
-                if let Some(candidate) = candidates.get(cursor).cloned() {
+                if let Some(candidate) = selection.candidates.get(selection.cursor).cloned() {
                     self.purge(&candidate)?;
-                    candidates.remove(cursor);
-                    cursor = cursor.min(candidates.len().saturating_sub(1));
+                    selection.candidates.remove(selection.cursor);
+                    selection.cursor = selection
+                        .cursor
+                        .min(selection.candidates.len().saturating_sub(1));
                 }
             }
             Some("commit") | Some("commit-unhandled") => {
-                if let Some(candidate) = candidates.get(cursor).cloned() {
-                    self.confirm_candidate(&input, okuri.as_deref(), &candidate)?;
+                if let Some(candidate) = self.confirm_selected_candidate(&selection)? {
                     self.input_state.context.push_str(&candidate.output);
                     self.input_state.phase = Phase::Direct;
                     return Ok((command == Some("commit"), Some(candidate.output)));
                 }
             }
             Some("delete") => {
-                if let Some(candidate) = candidates.get(cursor).cloned() {
-                    self.confirm_candidate(&input, okuri.as_deref(), &candidate)?;
+                if let Some(candidate) = self.confirm_selected_candidate(&selection)? {
                     let mut output = candidate.output;
                     output.pop();
                     self.input_state.context.push_str(&output);
@@ -430,8 +422,7 @@ impl Backend {
                 }
             }
             Some("special-midasi") => {
-                if let Some(candidate) = candidates.get(cursor).cloned() {
-                    self.confirm_candidate(&input, okuri.as_deref(), &candidate)?;
+                if let Some(candidate) = self.confirm_selected_candidate(&selection)? {
                     self.input_state.context.push_str(&candidate.output);
                     self.input_state.phase = Phase::Preedit {
                         stem: Composition::from_output(">".to_owned()),
@@ -441,8 +432,7 @@ impl Backend {
                 }
             }
             _ if should_forward_after_selection(&event, command) => {
-                if let Some(candidate) = candidates.get(cursor).cloned() {
-                    self.confirm_candidate(&input, okuri.as_deref(), &candidate)?;
+                if let Some(candidate) = self.confirm_selected_candidate(&selection)? {
                     self.input_state.context.push_str(&candidate.output);
                     self.input_state.phase = Phase::Direct;
                     let (consumed, following_commit) = self.handle_direct(event, command)?;
@@ -454,25 +444,24 @@ impl Backend {
                 }
             }
             None => {
-                self.input_state.phase = Phase::Selecting {
-                    input,
-                    okuri,
-                    candidates,
-                    cursor,
-                    origin,
-                };
+                self.input_state.phase = Phase::Selecting(selection);
                 return Ok((false, None));
             }
             _ => {}
         }
-        self.input_state.phase = Phase::Selecting {
-            input,
-            okuri,
-            candidates,
-            cursor,
-            origin,
-        };
+        self.input_state.phase = Phase::Selecting(selection);
         Ok((true, None))
+    }
+
+    fn confirm_selected_candidate(
+        &mut self,
+        selection: &CandidateSelection,
+    ) -> Result<Option<Candidate>> {
+        let Some(candidate) = selection.candidates.get(selection.cursor).cloned() else {
+            return Ok(None);
+        };
+        self.confirm_candidate(&selection.input, selection.okuri.as_deref(), &candidate)?;
+        Ok(Some(candidate))
     }
 
     pub(super) fn start_lookup(
@@ -489,283 +478,15 @@ impl Backend {
         if candidates.is_empty() {
             self.begin_registration(input, okuri_text, Phase::Preedit { stem, okuri }, None);
         } else {
-            self.input_state.phase = Phase::Selecting {
+            self.input_state.phase = Phase::Selecting(CandidateSelection {
                 input,
                 okuri: okuri_text,
                 candidates,
                 cursor: 0,
                 origin: SelectionOrigin::Preedit,
-            };
+            });
         }
         Ok((true, None))
-    }
-
-    pub(super) fn begin_registration(
-        &mut self,
-        input: String,
-        okuri: Option<String>,
-        source_phase: Phase,
-        empty_return_phase: Option<Phase>,
-    ) {
-        self.input_state.registrations.push(Registration {
-            input,
-            okuri,
-            source_phase,
-            empty_return_phase,
-            text: String::new(),
-            mode: self.input_state.mode,
-            context_before: self.input_state.context.clone(),
-        });
-        self.input_state.phase = Phase::Direct;
-        self.input_state.direct_pending.clear();
-    }
-
-    fn start_registration_generation(&mut self) -> Result<(bool, Option<String>)> {
-        let Some(registration) = self.input_state.registrations.last().cloned() else {
-            return Ok((false, None));
-        };
-        let model_input = format!(
-            "{}{}",
-            registration.input,
-            registration.okuri.as_deref().unwrap_or_default()
-        );
-        let candidate_count = self.fcitx5.candidate_window_threshold.max(1);
-        let excluded_outputs = self
-            .conversion
-            .lookup(&registration.input, registration.okuri.as_deref())?
-            .into_iter()
-            .map(|candidate| candidate.output)
-            .collect();
-        let mut result = self.start_generation(
-            &registration.context_before,
-            &model_input,
-            &registration.text,
-            crate::zenz::GenerationOptions::default(),
-            candidate_count,
-        )?;
-        let mut candidates =
-            generated_registration_candidates(&registration, result.candidates, &excluded_outputs);
-        while candidates.len() < candidate_count && !result.finished {
-            result = self.continue_generation(candidate_count - candidates.len())?;
-            candidates.extend(generated_registration_candidates(
-                &registration,
-                result.candidates,
-                &excluded_outputs,
-            ));
-        }
-        self.active_generation =
-            (!result.finished).then_some(ActiveGeneration { excluded_outputs });
-        if candidates.is_empty() {
-            self.cancel_generation();
-            self.input_state.phase = Phase::Direct;
-        } else {
-            self.input_state.phase = Phase::Selecting {
-                input: registration.input,
-                okuri: registration.okuri,
-                candidates,
-                cursor: 0,
-                origin: SelectionOrigin::RegistrationGeneration,
-            };
-        }
-        Ok((true, None))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn handle_registration_generation_selection(
-        &mut self,
-        event: KeyEvent,
-        command: Option<&str>,
-        input: String,
-        okuri: Option<String>,
-        mut candidates: Vec<Candidate>,
-        mut cursor: usize,
-    ) -> Result<(bool, Option<String>)> {
-        match command {
-            Some("abort") => {
-                self.cancel_generation();
-                self.input_state.phase = Phase::Direct;
-                return Ok((true, None));
-            }
-            Some("delete") => {
-                self.cancel_generation();
-                self.input_state.phase = Phase::Direct;
-                return Ok(self.delete_registration_text());
-            }
-            Some("next-candidate" | "complete") => {
-                let mut next = next_candidate_cursor(
-                    cursor,
-                    candidates.len(),
-                    self.fcitx5.candidate_window_threshold,
-                    self.fcitx5.page_size,
-                );
-                if next.is_none() && self.active_generation.is_some() {
-                    let registration = self
-                        .input_state
-                        .registrations
-                        .last()
-                        .cloned()
-                        .expect("generation selection requires registration");
-                    let excluded_outputs = self
-                        .active_generation
-                        .as_ref()
-                        .expect("generation pending was checked above")
-                        .excluded_outputs
-                        .clone();
-                    let mut generated = Vec::new();
-                    let mut finished = false;
-                    while generated.len() < self.fcitx5.page_size && !finished {
-                        let result =
-                            self.continue_generation(self.fcitx5.page_size - generated.len())?;
-                        finished = result.finished;
-                        generated.extend(generated_registration_candidates(
-                            &registration,
-                            result.candidates,
-                            &excluded_outputs,
-                        ));
-                    }
-                    if finished {
-                        self.active_generation = None;
-                    }
-                    candidates.extend(generated);
-                    next = next_candidate_cursor(
-                        cursor,
-                        candidates.len(),
-                        self.fcitx5.candidate_window_threshold,
-                        self.fcitx5.page_size,
-                    );
-                }
-                if let Some(next) = next {
-                    cursor = next;
-                }
-            }
-            Some("previous-candidate" | "previous") => {
-                if cursor == 0 {
-                    self.cancel_generation();
-                    self.input_state.phase = Phase::Direct;
-                    return Ok((true, None));
-                }
-                cursor = previous_candidate_cursor(
-                    cursor,
-                    self.fcitx5.candidate_window_threshold,
-                    self.fcitx5.page_size,
-                )
-                .expect("cursor 0 is handled above");
-            }
-            Some("commit" | "commit-unhandled") => {
-                if let Some(candidate) = candidates.get(cursor).cloned() {
-                    return self.confirm_generated_registration(&candidate, command, true);
-                }
-            }
-            _ if should_forward_after_selection(&event, command) => {
-                if let Some(candidate) = candidates.get(cursor).cloned() {
-                    let (_, generated) =
-                        self.confirm_generated_registration(&candidate, Some("commit"), true)?;
-                    let (consumed, following) = self.handle_direct(event, command)?;
-                    let mut commit = generated.unwrap_or_default();
-                    if let Some(following) = following {
-                        commit.push_str(&following);
-                    }
-                    return Ok((consumed, Some(commit)));
-                }
-            }
-            None => {
-                self.input_state.phase = Phase::Selecting {
-                    input,
-                    okuri,
-                    candidates,
-                    cursor,
-                    origin: SelectionOrigin::RegistrationGeneration,
-                };
-                return Ok((false, None));
-            }
-            _ => {}
-        }
-        self.input_state.phase = Phase::Selecting {
-            input,
-            okuri,
-            candidates,
-            cursor,
-            origin: SelectionOrigin::RegistrationGeneration,
-        };
-        Ok((true, None))
-    }
-
-    fn confirm_generated_registration(
-        &mut self,
-        candidate: &Candidate,
-        command: Option<&str>,
-        append_context: bool,
-    ) -> Result<(bool, Option<String>)> {
-        let Some(registration) = self.input_state.registrations.pop() else {
-            return Ok((false, None));
-        };
-        self.register(
-            &registration.input,
-            registration.okuri.as_deref(),
-            &candidate.text,
-            None,
-        )?;
-        self.cancel_generation();
-        self.input_state.mode = registration.mode;
-        self.input_state.context = registration.context_before;
-        if append_context {
-            self.input_state.context.push_str(&candidate.output);
-        }
-        self.input_state.phase = Phase::Direct;
-        let nested = !self.input_state.registrations.is_empty();
-        Ok((
-            nested || command == Some("commit"),
-            Some(candidate.output.clone()),
-        ))
-    }
-
-    pub(super) fn abort_registration(&mut self) -> (bool, Option<String>) {
-        let Some(registration) = self.input_state.registrations.pop() else {
-            return (false, None);
-        };
-        self.input_state.mode = registration.mode;
-        self.input_state.context = registration.context_before;
-        self.input_state.phase = registration.source_phase;
-        self.input_state.direct_pending.clear();
-        (true, None)
-    }
-
-    pub(super) fn delete_registration_text(&mut self) -> (bool, Option<String>) {
-        let Some(registration) = self.input_state.registrations.last_mut() else {
-            return (false, None);
-        };
-        if registration.text.pop().is_some() {
-            self.input_state.context.pop();
-        }
-        (true, None)
-    }
-
-    pub(super) fn finish_registration(
-        &mut self,
-        command: Option<&str>,
-    ) -> Result<(bool, Option<String>)> {
-        let Some(registration) = self.input_state.registrations.pop() else {
-            return Ok((false, None));
-        };
-        if registration.text.is_empty() {
-            self.input_state.mode = registration.mode;
-            self.input_state.context = registration.context_before;
-            self.input_state.phase = registration
-                .empty_return_phase
-                .unwrap_or(registration.source_phase);
-            return Ok((true, None));
-        }
-
-        self.register(
-            &registration.input,
-            registration.okuri.as_deref(),
-            &registration.text,
-            None,
-        )?;
-        self.input_state.mode = registration.mode;
-        self.input_state.phase = Phase::Direct;
-        let nested = !self.input_state.registrations.is_empty();
-        Ok((nested || command == Some("commit"), Some(registration.text)))
     }
 
     pub(super) fn finish_direct(&mut self) -> Option<String> {
@@ -800,15 +521,9 @@ impl Backend {
                 okuri.as_ref(),
             ))),
             Phase::Abbrev { input } => Ok(Some(input)),
-            Phase::Selecting {
-                input,
-                okuri,
-                candidates,
-                cursor,
-                origin,
-            } => {
-                let candidate = candidates.get(cursor).cloned();
-                if origin == SelectionOrigin::RegistrationGeneration {
+            Phase::Selecting(selection) => {
+                let candidate = selection.candidates.get(selection.cursor).cloned();
+                if selection.origin == SelectionOrigin::RegistrationGeneration {
                     return match candidate {
                         Some(candidate) => self
                             .confirm_generated_registration(&candidate, Some("commit"), false)
@@ -817,350 +532,14 @@ impl Backend {
                     };
                 }
                 if let Some(candidate) = &candidate {
-                    self.confirm_candidate(&input, okuri.as_deref(), candidate)?;
+                    self.confirm_candidate(
+                        &selection.input,
+                        selection.okuri.as_deref(),
+                        candidate,
+                    )?;
                 }
                 Ok(candidate.map(|candidate| candidate.output))
             }
         }
-    }
-}
-
-fn generated_registration_candidates(
-    registration: &Registration,
-    generated: Vec<crate::zenz::GeneratedCandidate>,
-    excluded_outputs: &std::collections::HashSet<String>,
-) -> Vec<Candidate> {
-    generated
-        .into_iter()
-        .filter(|generated| !excluded_outputs.contains(&generated.text))
-        .filter_map(|generated| {
-            let text = match registration.okuri.as_deref() {
-                Some(okuri) => generated.text.strip_suffix(okuri)?.to_owned(),
-                None => generated.text.clone(),
-            };
-            (!text.is_empty()).then(|| Candidate {
-                input: registration.input.clone(),
-                okuri: registration.okuri.clone(),
-                text,
-                output: generated.text,
-                annotation: Some("AI".to_owned()),
-                source: crate::candidate::CandidateSource::System,
-                loss: generated.loss,
-                token_count: generated.token_count,
-                recency: None,
-            })
-        })
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::*;
-    use crate::conversion::ConversionCore;
-    use crate::dictionary::MemoryUserDictionary;
-    use crate::zenz::GeneratedCandidate;
-    use crate::{CandidateOrderConfig, CandidateSource};
-
-    fn rule() -> RomKanaRule {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-data/rules");
-        RomKanaRule::load("base", &[root]).unwrap()
-    }
-
-    fn conversion_core() -> ConversionCore<MemoryUserDictionary> {
-        ConversionCore::load(
-            &[] as &[&Path],
-            MemoryUserDictionary::new(1.0),
-            CandidateOrderConfig::default(),
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn shifted_vowel_completes_pending_stem_instead_of_starting_okuri() {
-        let rule = rule();
-        let event = KeyEvent::character("A", 'a', Modifiers::SHIFT);
-        let mut stem = Composition::default();
-        stem.push(&rule, "k", KanaMode::Hiragana);
-        assert!(!should_start_okuri(&event, None, &stem));
-
-        stem.push(&rule, "a", KanaMode::Hiragana);
-        assert_eq!(stem.display(), "か");
-        assert!(should_start_okuri(&event, None, &stem));
-
-        stem.push(&rule, "k", KanaMode::Hiragana);
-        assert_eq!(stem.display(), "かk");
-        assert!(!should_start_okuri(&event, None, &stem));
-    }
-
-    #[test]
-    fn upper_command_uses_lower_text_and_upper_semantics() {
-        let event = KeyEvent::character(":", ':', Modifiers::SHIFT);
-        assert_eq!(input_text(&event, Some("upper-;")), Some(";"));
-        assert!(is_upper_input(&event, Some("upper-;")));
-
-        let mut stem = Composition::default();
-        stem.push(&rule(), "ka", KanaMode::Hiragana);
-        assert!(should_start_okuri(&event, Some("upper-;"), &stem));
-    }
-
-    #[test]
-    fn upper_command_requires_a_rom_kana_prefix() {
-        let rule = rule();
-        let event = KeyEvent::character(":", ':', Modifiers::SHIFT);
-
-        let invalid = command_for_rom_kana(Some("upper-;"), &rule, InputMode::Hiragana);
-        assert_eq!(invalid, None);
-        assert_eq!(input_text(&event, invalid), Some(":"));
-        assert!(!is_upper_input(&event, invalid));
-
-        let valid = command_for_rom_kana(Some("upper-k"), &rule, InputMode::Hiragana);
-        assert_eq!(valid, Some("upper-k"));
-        assert_eq!(input_text(&event, valid), Some("k"));
-        assert!(is_upper_input(&event, valid));
-
-        let latin = command_for_rom_kana(Some("upper-k"), &rule, InputMode::Latin);
-        assert_eq!(latin, None);
-        assert_eq!(input_text(&event, latin), Some(":"));
-        assert!(!is_upper_input(&event, latin));
-    }
-
-    #[test]
-    fn first_previous_candidate_returns_to_preedit() {
-        assert!(should_restore_preedit(Some("previous-candidate"), 0));
-        assert!(should_restore_preedit(Some("previous"), 0));
-        assert!(!should_restore_preedit(Some("previous-candidate"), 2));
-        assert!(!should_restore_preedit(Some("previous"), 2));
-        assert!(!should_restore_preedit(Some("delete"), 2));
-        assert!(should_restore_preedit(Some("abort"), 2));
-    }
-
-    #[test]
-    fn regular_input_is_forwarded_after_committing_selection() {
-        assert!(should_forward_after_selection(
-            &KeyEvent::character("n", 'n', Modifiers::empty()),
-            None
-        ));
-        assert!(!should_forward_after_selection(
-            &KeyEvent::named("Shift_L", Modifiers::SHIFT),
-            None
-        ));
-        assert!(should_forward_after_selection(
-            &KeyEvent::character(":", ':', Modifiers::SHIFT),
-            Some("upper-;")
-        ));
-        assert!(!should_forward_after_selection(
-            &KeyEvent::named("BackSpace", Modifiers::empty()),
-            Some("delete")
-        ));
-    }
-
-    #[test]
-    fn converts_ascii_to_wide_latin() {
-        assert_eq!(to_wide_latin("Az 09!?"), "Ａｚ　０９！？");
-        assert_eq!(to_wide_latin("日本語"), "日本語");
-    }
-
-    #[test]
-    fn maps_all_five_input_mode_commands() {
-        assert_eq!(
-            input_mode_for_command("set-input-mode-hiragana"),
-            Some(InputMode::Hiragana)
-        );
-        assert_eq!(
-            input_mode_for_command("set-input-mode-katakana"),
-            Some(InputMode::Katakana)
-        );
-        assert_eq!(
-            input_mode_for_command("set-input-mode-hankaku-katakana"),
-            Some(InputMode::HankakuKatakana)
-        );
-        assert_eq!(
-            input_mode_for_command("set-input-mode-latin"),
-            Some(InputMode::Latin)
-        );
-        assert_eq!(
-            input_mode_for_command("set-input-mode-wide-latin"),
-            Some(InputMode::WideLatin)
-        );
-    }
-
-    #[test]
-    fn abbrev_is_available_only_from_kana_modes() {
-        assert!(supports_abbrev(InputMode::Hiragana));
-        assert!(supports_abbrev(InputMode::Katakana));
-        assert!(supports_abbrev(InputMode::HankakuKatakana));
-        assert!(!supports_abbrev(InputMode::Latin));
-        assert!(!supports_abbrev(InputMode::WideLatin));
-    }
-
-    #[test]
-    fn pending_romaji_takes_priority_over_abbrev() {
-        assert!(should_start_abbrev(Some("abbrev"), InputMode::Hiragana, ""));
-        assert!(!should_start_abbrev(
-            Some("abbrev"),
-            InputMode::Hiragana,
-            "z"
-        ));
-    }
-
-    #[test]
-    fn asynchronous_rerank_preserves_selected_candidate() {
-        let candidate = |output: &str, loss| Candidate {
-            input: String::new(),
-            okuri: None,
-            text: output.to_owned(),
-            output: output.to_owned(),
-            annotation: None,
-            source: CandidateSource::System,
-            loss,
-            token_count: 1,
-            recency: None,
-        };
-        let mut candidates = vec![candidate("second", 2.0), candidate("third", 3.0)];
-        let mut cursor = 1;
-
-        merge_reranked_candidate(
-            &conversion_core(),
-            &mut candidates,
-            &mut cursor,
-            candidate("first", 1.0),
-            CandidateOrder::AiScore,
-            true,
-        );
-
-        assert_eq!(
-            candidates
-                .iter()
-                .map(|candidate| candidate.output.as_str())
-                .collect::<Vec<_>>(),
-            ["first", "second", "third"]
-        );
-        assert_eq!(candidates[cursor].output, "third");
-    }
-
-    #[test]
-    fn asynchronous_rerank_selects_new_best_before_user_interaction() {
-        let candidate = |output: &str, loss| Candidate {
-            input: String::new(),
-            okuri: None,
-            text: output.to_owned(),
-            output: output.to_owned(),
-            annotation: None,
-            source: CandidateSource::System,
-            loss,
-            token_count: 1,
-            recency: None,
-        };
-        let mut candidates = vec![candidate("second", 2.0)];
-        let mut cursor = 0;
-
-        merge_reranked_candidate(
-            &conversion_core(),
-            &mut candidates,
-            &mut cursor,
-            candidate("first", 1.0),
-            CandidateOrder::AiScore,
-            false,
-        );
-
-        assert_eq!(candidates[cursor].output, "first");
-    }
-
-    #[test]
-    fn does_not_change_mode_in_the_middle_of_romaji() {
-        assert_eq!(
-            direct_mode_transition(Some("set-input-mode-latin"), ""),
-            Some(InputMode::Latin)
-        );
-        assert_eq!(
-            direct_mode_transition(Some("set-input-mode-latin"), "k"),
-            None
-        );
-    }
-
-    #[test]
-    fn candidate_cursor_advances_individually_then_by_page() {
-        assert_eq!(next_candidate_cursor(0, 20, 3, 8), Some(1));
-        assert_eq!(next_candidate_cursor(1, 20, 3, 8), Some(2));
-        assert_eq!(next_candidate_cursor(2, 20, 3, 8), Some(3));
-        assert_eq!(next_candidate_cursor(3, 20, 3, 8), Some(11));
-        assert_eq!(next_candidate_cursor(11, 20, 3, 8), Some(19));
-        assert_eq!(next_candidate_cursor(19, 20, 3, 8), None);
-    }
-
-    #[test]
-    fn candidate_cursor_rewinds_by_page_then_individually() {
-        assert_eq!(previous_candidate_cursor(19, 3, 8), Some(11));
-        assert_eq!(previous_candidate_cursor(11, 3, 8), Some(3));
-        assert_eq!(previous_candidate_cursor(3, 3, 8), Some(2));
-        assert_eq!(previous_candidate_cursor(2, 3, 8), Some(1));
-        assert_eq!(previous_candidate_cursor(1, 3, 8), Some(0));
-        assert_eq!(previous_candidate_cursor(0, 3, 8), None);
-    }
-
-    #[test]
-    fn generated_okuri_candidate_keeps_output_and_strips_dictionary_text() {
-        let registration = Registration {
-            input: "み".to_owned(),
-            okuri: Some("る".to_owned()),
-            source_phase: Phase::Direct,
-            empty_return_phase: None,
-            text: String::new(),
-            mode: InputMode::Hiragana,
-            context_before: String::new(),
-        };
-        let candidates = generated_registration_candidates(
-            &registration,
-            vec![
-                GeneratedCandidate {
-                    text: "見る".to_owned(),
-                    loss: 1.0,
-                    token_count: 2,
-                },
-                GeneratedCandidate {
-                    text: "見た".to_owned(),
-                    loss: 2.0,
-                    token_count: 2,
-                },
-            ],
-            &std::collections::HashSet::new(),
-        );
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].text, "見");
-        assert_eq!(candidates[0].output, "見る");
-    }
-
-    #[test]
-    fn generated_candidates_already_in_dictionary_are_excluded() {
-        let registration = Registration {
-            input: "へんかん".to_owned(),
-            okuri: None,
-            source_phase: Phase::Direct,
-            empty_return_phase: None,
-            text: String::new(),
-            mode: InputMode::Hiragana,
-            context_before: String::new(),
-        };
-        let excluded = std::collections::HashSet::from(["変換".to_owned()]);
-        let candidates = generated_registration_candidates(
-            &registration,
-            vec![
-                GeneratedCandidate {
-                    text: "変換".to_owned(),
-                    loss: 1.0,
-                    token_count: 2,
-                },
-                GeneratedCandidate {
-                    text: "返還".to_owned(),
-                    loss: 2.0,
-                    token_count: 2,
-                },
-            ],
-            &excluded,
-        );
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].output, "返還");
     }
 }

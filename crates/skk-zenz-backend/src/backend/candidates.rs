@@ -12,7 +12,7 @@ impl Backend {
                 .conversion
                 .lookup_order(&stem.display(), okuri.as_ref().map(|_| "")),
             Phase::Abbrev { .. } => self.conversion.abbrev_order(),
-            Phase::Direct | Phase::Selecting { .. } => return false,
+            Phase::Direct | Phase::Selecting(_) => return false,
         };
         order.uses_ai_score()
     }
