@@ -22,12 +22,14 @@ impl Backend {
                 (false, None)
             }
             InputEvent::Reset => {
+                self.cancel_generation();
                 self.input_state.reset();
                 (true, None)
             }
             InputEvent::SelectCandidate(index) => self.select_candidate_at(index)?,
             InputEvent::FocusOut { commit } => {
                 let output = if commit { self.finish_input()? } else { None };
+                self.cancel_generation();
                 self.input_state.reset();
                 if let Some(output) = &output {
                     self.input_state.context.push_str(output);

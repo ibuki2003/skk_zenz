@@ -44,6 +44,7 @@ impl Backend {
             keymaps,
             input_state: InputState::default(),
             active_rerank: None,
+            active_generation: None,
             fcitx5: config.fcitx5,
             config_path: config.config_path,
             conversion_history_path,
@@ -116,6 +117,7 @@ impl Backend {
         self.fcitx5 = config.fcitx5;
         self.conversion_history_enabled = config.conversion_history;
         self.active_rerank = None;
+        self.cancel_generation();
         if reload_model {
             self.scorer.reload(config.zenz.clone())?;
             self.pending_zenz_configs.push_back(config.zenz);
@@ -127,6 +129,7 @@ impl Backend {
     pub fn clear_cache(&mut self) {
         self.scorer.clear();
         self.active_rerank = None;
+        self.active_generation = None;
     }
 
     pub fn prepare(&mut self, context: &str, input: &str) -> Result<Score> {
@@ -136,6 +139,30 @@ impl Backend {
         #[cfg(debug_assertions)]
         eprintln!("[BACKEND] prepare -> {result:?}");
         result
+    }
+
+    pub fn start_generation(
+        &self,
+        context: &str,
+        input: &str,
+        output_prefix: &str,
+        options: crate::zenz::GenerationOptions,
+        candidate_count: usize,
+    ) -> Result<crate::zenz::GenerationResult> {
+        self.scorer
+            .start_generation(context, input, output_prefix, options, candidate_count)
+    }
+
+    pub fn continue_generation(
+        &self,
+        candidate_count: usize,
+    ) -> Result<crate::zenz::GenerationResult> {
+        self.scorer.continue_generation(candidate_count)
+    }
+
+    pub fn cancel_generation(&mut self) {
+        self.scorer.cancel_generation();
+        self.active_generation = None;
     }
 
     pub fn convert_romaji(&self, input: &str, mode: KanaMode) -> KanaConversion {

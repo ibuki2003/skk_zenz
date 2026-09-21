@@ -96,6 +96,7 @@ pub(crate) enum Phase {
 pub(crate) enum SelectionOrigin {
     Preedit,
     Abbrev,
+    RegistrationGeneration,
 }
 
 #[derive(Clone, Debug)]
@@ -122,6 +123,13 @@ impl InputState {
     }
 
     pub(crate) fn preedit(&self) -> String {
+        let generated_selection = matches!(
+            self.phase,
+            Phase::Selecting {
+                origin: SelectionOrigin::RegistrationGeneration,
+                ..
+            }
+        );
         let mut value = match &self.phase {
             Phase::Direct => self.direct_pending.clone(),
             Phase::Preedit { stem, okuri } => {
@@ -140,13 +148,18 @@ impl InputState {
                 .map(|candidate| format!("▼{}", candidate.output))
                 .unwrap_or_default(),
         };
-        for registration in self.registrations.iter().rev() {
+        for (index, registration) in self.registrations.iter().rev().enumerate() {
             let mut header = registration.input.clone();
             if let Some(okuri) = &registration.okuri {
                 header.push('*');
                 header.push_str(okuri);
             }
-            value = format!("▼{header}【{}{value}】", registration.text);
+            let text = if generated_selection && index == 0 {
+                ""
+            } else {
+                &registration.text
+            };
+            value = format!("▼{header}【{text}{value}】");
         }
         value
     }
@@ -314,5 +327,42 @@ mod tests {
         });
         state.phase = Phase::Direct;
         assert_eq!(state.preedit(), "▼かぱ【下▼か*え【】】");
+    }
+
+    #[test]
+    fn generated_selection_replaces_registration_prefix_in_preedit() {
+        let state = InputState {
+            phase: Phase::Selecting {
+                input: "ふかぼる".to_owned(),
+                okuri: None,
+                candidates: vec![Candidate {
+                    input: "ふかぼる".to_owned(),
+                    okuri: None,
+                    text: "深掘る".to_owned(),
+                    output: "深掘る".to_owned(),
+                    annotation: Some("AI".to_owned()),
+                    source: crate::CandidateSource::System,
+                    loss: 0.0,
+                    token_count: 3,
+                    recency: None,
+                }],
+                cursor: 0,
+                origin: SelectionOrigin::RegistrationGeneration,
+            },
+            registrations: vec![Registration {
+                input: "ふかぼる".to_owned(),
+                okuri: None,
+                source_phase: Phase::Preedit {
+                    stem: Composition::from_output("ふかぼる".to_owned()),
+                    okuri: None,
+                },
+                empty_return_phase: None,
+                text: "深".to_owned(),
+                mode: InputMode::Hiragana,
+                context_before: String::new(),
+            }],
+            ..InputState::default()
+        };
+        assert_eq!(state.preedit(), "▼ふかぼる【▼深掘る】");
     }
 }

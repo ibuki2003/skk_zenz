@@ -1,9 +1,10 @@
 use std::fs;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
+use skk_zenz_backend::zenz::GenerationOptions;
 use skk_zenz_backend::{Backend, BackendConfig, KanaMode, RomKanaRule};
 #[cfg(test)]
 use skk_zenz_backend::{Key, KeyEvent, Modifiers};
@@ -31,6 +32,30 @@ struct Args {
 
     #[arg(long, value_enum, default_value_t = CliKanaMode::Hiragana)]
     kana_mode: CliKanaMode,
+
+    /// Zenzで候補を直接生成する読み
+    #[arg(long)]
+    generate: Option<String>,
+
+    /// --generateで使用する左文脈
+    #[arg(long, default_value = "")]
+    context: String,
+
+    /// --generateで候補の先頭に固定する文字列
+    #[arg(long, default_value = "")]
+    prefix: String,
+
+    /// --generateで1ページに出力する候補数
+    #[arg(long, default_value_t = 5)]
+    page_size: usize,
+
+    /// --generateのbeam幅
+    #[arg(long, default_value_t = 8)]
+    beam_width: usize,
+
+    /// --generateで追加生成する最大token数
+    #[arg(long, default_value_t = 32)]
+    max_tokens: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -56,7 +81,61 @@ fn main() -> Result<()> {
         );
         return Ok(());
     }
+    let load_started = std::time::Instant::now();
     let mut backend = Backend::load(config)?;
+    if let Some(input) = args.generate {
+        let load_elapsed = load_started.elapsed();
+        let options = GenerationOptions {
+            beam_width: args.beam_width,
+            max_tokens: args.max_tokens,
+        };
+        println!("load: {:.2} ms", load_elapsed.as_secs_f64() * 1_000.0);
+        let mut offset = 0;
+        let mut first = true;
+        loop {
+            let generate_started = std::time::Instant::now();
+            let result = if first {
+                first = false;
+                backend.start_generation(
+                    &args.context,
+                    &input,
+                    &args.prefix,
+                    options,
+                    args.page_size,
+                )?
+            } else {
+                backend.continue_generation(args.page_size)?
+            };
+            let generate_elapsed = generate_started.elapsed();
+            println!(
+                "generate: {:.2} ms candidates={} expanded={} reused={} decoded={} finished={}",
+                generate_elapsed.as_secs_f64() * 1_000.0,
+                result.candidates.len(),
+                result.expanded_hypotheses,
+                result.reused_tokens,
+                result.decoded_tokens,
+                result.finished,
+            );
+            for candidate in &result.candidates {
+                println!(
+                    "{offset:>3} loss={:.4} tokens={} {}",
+                    candidate.loss, candidate.token_count, candidate.text
+                );
+                offset += 1;
+            }
+            if result.finished || !io::stdin().is_terminal() {
+                break;
+            }
+            print!("Enter: 次の候補 / q: 終了 > ");
+            io::stdout().flush()?;
+            let mut line = String::new();
+            if io::stdin().read_line(&mut line)? == 0 || line.trim() == "q" {
+                backend.cancel_generation();
+                break;
+            }
+        }
+        return Ok(());
+    }
     let lines: Vec<String> = match args.script {
         Some(path) => fs::read_to_string(&path)
             .with_context(|| format!("スクリプトを読めません: {}", path.display()))?

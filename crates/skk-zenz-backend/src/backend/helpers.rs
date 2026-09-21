@@ -50,7 +50,8 @@ pub(super) fn should_start_okuri(
 }
 
 pub(super) fn should_restore_preedit(command: Option<&str>, cursor: usize) -> bool {
-    command == Some("abort") || command == Some("previous-candidate") && cursor == 0
+    command == Some("abort")
+        || matches!(command, Some("previous-candidate" | "previous")) && cursor == 0
 }
 
 pub(super) fn selection_source_phase(
@@ -64,6 +65,7 @@ pub(super) fn selection_source_phase(
             okuri: okuri.map(Composition::from_output),
         },
         SelectionOrigin::Abbrev => Phase::Abbrev { input },
+        SelectionOrigin::RegistrationGeneration => Phase::Direct,
     }
 }
 

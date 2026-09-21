@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::candidate::Candidate;
 use crate::config::{BackendConfig, CandidateOrder, Fcitx5Config};
@@ -24,6 +24,10 @@ struct ActiveRerank {
     total: usize,
 }
 
+struct ActiveGeneration {
+    excluded_outputs: HashSet<String>,
+}
+
 pub struct Backend {
     scorer: ZenzWorker,
     conversion: ConversionCore<SqliteUserDictionary>,
@@ -31,6 +35,7 @@ pub struct Backend {
     keymaps: HashMap<InputMode, Keymap>,
     input_state: InputState,
     active_rerank: Option<ActiveRerank>,
+    active_generation: Option<ActiveGeneration>,
     fcitx5: Fcitx5Config,
     config_path: std::path::PathBuf,
     conversion_history_path: std::path::PathBuf,

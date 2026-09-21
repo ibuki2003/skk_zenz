@@ -7,7 +7,9 @@ use anyhow::{Context, Result, anyhow};
 use crate::candidate::Candidate;
 
 use super::model_resolver::resolve_model;
-use super::{Score, ZenzConfig, ZenzScorer};
+use super::{
+    GenerationOptions, GenerationResult, GenerationSession, Score, ZenzConfig, ZenzScorer,
+};
 
 pub(crate) const INITIAL_RERANK_COUNT: usize = 3;
 
@@ -45,6 +47,19 @@ enum WorkerCommand {
         context: String,
         input: String,
     },
+    StartGeneration {
+        context: String,
+        input: String,
+        output_prefix: String,
+        options: GenerationOptions,
+        candidate_count: usize,
+        response: SyncSender<Result<GenerationResult, String>>,
+    },
+    ContinueGeneration {
+        candidate_count: usize,
+        response: SyncSender<Result<GenerationResult, String>>,
+    },
+    CancelGeneration,
     Reload {
         config: ZenzConfig,
     },
@@ -139,6 +154,43 @@ impl ZenzWorker {
         });
     }
 
+    pub(crate) fn start_generation(
+        &self,
+        context: &str,
+        input: &str,
+        output_prefix: &str,
+        options: GenerationOptions,
+        candidate_count: usize,
+    ) -> Result<GenerationResult> {
+        let (sender, receiver) = mpsc::sync_channel(0);
+        self.commands
+            .send(WorkerCommand::StartGeneration {
+                context: context.to_owned(),
+                input: input.to_owned(),
+                output_prefix: output_prefix.to_owned(),
+                options,
+                candidate_count,
+                response: sender,
+            })
+            .context("AI評価workerへ生成要求を送信できません")?;
+        receive_response(receiver, "候補生成開始")
+    }
+
+    pub(crate) fn continue_generation(&self, candidate_count: usize) -> Result<GenerationResult> {
+        let (sender, receiver) = mpsc::sync_channel(0);
+        self.commands
+            .send(WorkerCommand::ContinueGeneration {
+                candidate_count,
+                response: sender,
+            })
+            .context("AI評価workerへ生成続行要求を送信できません")?;
+        receive_response(receiver, "候補生成続行")
+    }
+
+    pub(crate) fn cancel_generation(&self) {
+        let _ = self.commands.send(WorkerCommand::CancelGeneration);
+    }
+
     pub(crate) fn reload(&self, config: ZenzConfig) -> Result<()> {
         self.commands
             .send(WorkerCommand::Reload { config })
@@ -209,6 +261,7 @@ fn run_worker(
     model_events: ModelDownloadEventHandler,
 ) {
     let mut pending = None;
+    let mut generation_session: Option<GenerationSession> = None;
     loop {
         let command = match pending.take() {
             Some(command) => command,
@@ -218,12 +271,16 @@ fn run_worker(
             },
         };
         match command {
-            WorkerCommand::Clear => scorer.clear(),
+            WorkerCommand::Clear => {
+                generation_session = None;
+                scorer.clear();
+            }
             WorkerCommand::Prepare {
                 context,
                 input,
                 response,
             } => {
+                generation_session = None;
                 let result = scorer
                     .prepare(&context, &input)
                     .map_err(|error| format!("{error:#}"));
@@ -233,6 +290,7 @@ fn run_worker(
                 mut context,
                 mut input,
             } => {
+                generation_session = None;
                 let mut superseded = false;
                 loop {
                     match commands.try_recv() {
@@ -257,7 +315,44 @@ fn run_worker(
                     eprintln!("speculative prepare failed: {_error:#}");
                 }
             }
+            WorkerCommand::StartGeneration {
+                context,
+                input,
+                output_prefix,
+                options,
+                candidate_count,
+                response,
+            } => {
+                let result = scorer
+                    .start_generation(&context, &input, &output_prefix, options)
+                    .and_then(|mut session| {
+                        let result = scorer.continue_generation(&mut session, candidate_count)?;
+                        generation_session = (!result.finished).then_some(session);
+                        Ok(result)
+                    })
+                    .map_err(|error| format!("{error:#}"));
+                if result.is_err() {
+                    generation_session = None;
+                }
+                let _ = response.send(result);
+            }
+            WorkerCommand::ContinueGeneration {
+                candidate_count,
+                response,
+            } => {
+                let result = generation_session
+                    .as_mut()
+                    .context("続行できる候補生成がありません")
+                    .and_then(|session| scorer.continue_generation(session, candidate_count))
+                    .map_err(|error| format!("{error:#}"));
+                if result.as_ref().is_ok_and(|result| result.finished) || result.is_err() {
+                    generation_session = None;
+                }
+                let _ = response.send(result);
+            }
+            WorkerCommand::CancelGeneration => generation_session = None,
             WorkerCommand::Reload { config } => {
+                generation_session = None;
                 let result = resolve_model(config, &model_events)
                     .and_then(|config| scorer.reload(&config))
                     .map_err(|error| format!("{error:#}"));
@@ -271,6 +366,7 @@ fn run_worker(
                 remaining,
                 response,
             } => {
+                generation_session = None;
                 let initial = score_candidates(&mut scorer, &context, &input, initial);
                 let initial_succeeded = initial.is_ok();
                 if response
