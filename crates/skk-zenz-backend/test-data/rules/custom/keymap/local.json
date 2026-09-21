@@ -1,9 +1,10 @@
 {
   "define": {
     "keymap": {
-      "!": "bang",
-      "X": "uppercase-x",
-      "x": "local-x"
+      "!": "complete",
+      "X": "upper-x",
+      "x": "delete",
+      "z": "unsupported"
     }
   }
 }

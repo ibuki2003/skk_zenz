@@ -9,17 +9,18 @@ pub(super) fn is_preedit_start(event: &KeyEvent) -> bool {
             .is_some_and(|text| text.len() == 1 && text.as_bytes()[0].is_ascii_uppercase())
 }
 
-pub(super) fn upper_command_text(command: Option<&str>) -> Option<&str> {
-    command
-        .and_then(|command| command.strip_prefix("upper-"))
-        .filter(|text| !text.is_empty())
+pub(super) fn upper_command_text(command: Option<&Command>) -> Option<&str> {
+    match command {
+        Some(Command::Upper(text)) => Some(text),
+        _ => None,
+    }
 }
 
 pub(super) fn command_for_rom_kana<'a>(
-    command: Option<&'a str>,
+    command: Option<&'a Command>,
     rule: &RomKanaRule,
     mode: InputMode,
-) -> Option<&'a str> {
+) -> Option<&'a Command> {
     match upper_command_text(command) {
         Some(text)
             if !matches!(
@@ -33,25 +34,28 @@ pub(super) fn command_for_rom_kana<'a>(
     }
 }
 
-pub(super) fn input_text<'a>(event: &'a KeyEvent, command: Option<&'a str>) -> Option<&'a str> {
+pub(super) fn input_text<'a>(event: &'a KeyEvent, command: Option<&'a Command>) -> Option<&'a str> {
     upper_command_text(command).or(event.text.as_deref())
 }
 
-pub(super) fn is_upper_input(event: &KeyEvent, command: Option<&str>) -> bool {
+pub(super) fn is_upper_input(event: &KeyEvent, command: Option<&Command>) -> bool {
     upper_command_text(command).is_some() || is_preedit_start(event)
 }
 
 pub(super) fn should_start_okuri(
     event: &KeyEvent,
-    command: Option<&str>,
+    command: Option<&Command>,
     stem: &Composition,
 ) -> bool {
     is_upper_input(event, command) && stem.has_output() && !stem.has_pending()
 }
 
-pub(super) fn should_restore_preedit(command: Option<&str>, cursor: usize) -> bool {
-    command == Some("abort")
-        || matches!(command, Some("previous-candidate" | "previous")) && cursor == 0
+pub(super) fn should_restore_preedit(command: Option<&Command>, cursor: usize) -> bool {
+    command == Some(&Command::Abort)
+        || matches!(
+            command,
+            Some(Command::PreviousCandidate | Command::Previous)
+        ) && cursor == 0
 }
 
 pub(super) fn selection_source_phase(
@@ -69,7 +73,7 @@ pub(super) fn selection_source_phase(
     }
 }
 
-pub(super) fn should_forward_after_selection(event: &KeyEvent, command: Option<&str>) -> bool {
+pub(super) fn should_forward_after_selection(event: &KeyEvent, command: Option<&Command>) -> bool {
     input_text(event, command).is_some()
 }
 
@@ -80,26 +84,29 @@ pub(super) fn supports_abbrev(mode: InputMode) -> bool {
     )
 }
 
-pub(super) fn should_start_abbrev(command: Option<&str>, mode: InputMode, pending: &str) -> bool {
-    command == Some("abbrev") && supports_abbrev(mode) && pending.is_empty()
+pub(super) fn should_start_abbrev(
+    command: Option<&Command>,
+    mode: InputMode,
+    pending: &str,
+) -> bool {
+    command == Some(&Command::Abbrev) && supports_abbrev(mode) && pending.is_empty()
 }
 
-pub(super) fn input_mode_for_command(command: &str) -> Option<InputMode> {
+pub(super) fn input_mode_for_command(command: &Command) -> Option<InputMode> {
     match command {
-        "set-input-mode-hiragana" => Some(InputMode::Hiragana),
-        "set-input-mode-katakana" => Some(InputMode::Katakana),
-        "set-input-mode-hankaku-katakana" => Some(InputMode::HankakuKatakana),
-        "set-input-mode-latin" => Some(InputMode::Latin),
-        "set-input-mode-wide-latin" => Some(InputMode::WideLatin),
+        Command::SetInputMode(mode) => Some(*mode),
         _ => None,
     }
 }
 
-pub(super) fn direct_mode_transition(command: Option<&str>, pending: &str) -> Option<InputMode> {
-    pending
-        .is_empty()
-        .then(|| command.and_then(input_mode_for_command))
-        .flatten()
+pub(super) fn direct_mode_transition(
+    command: Option<&Command>,
+    pending: &str,
+) -> Option<InputMode> {
+    match command {
+        Some(Command::SetInputMode(mode)) if pending.is_empty() => Some(*mode),
+        _ => None,
+    }
 }
 
 pub(super) fn next_candidate_cursor(
@@ -222,30 +229,42 @@ mod tests {
     #[test]
     fn upper_command_uses_lower_text_and_upper_semantics() {
         let event = KeyEvent::character(":", ':', Modifiers::SHIFT);
-        assert_eq!(input_text(&event, Some("upper-;")), Some(";"));
-        assert!(is_upper_input(&event, Some("upper-;")));
+        assert_eq!(
+            input_text(&event, Some(&Command::Upper(";".to_owned()))),
+            Some(";")
+        );
+        assert!(is_upper_input(
+            &event,
+            Some(&Command::Upper(";".to_owned()))
+        ));
 
         let mut stem = Composition::default();
         stem.push(&rule(), "ka", KanaMode::Hiragana);
-        assert!(should_start_okuri(&event, Some("upper-;"), &stem));
+        assert!(should_start_okuri(
+            &event,
+            Some(&Command::Upper(";".to_owned())),
+            &stem
+        ));
     }
 
     #[test]
     fn upper_command_requires_a_rom_kana_prefix() {
         let rule = rule();
         let event = KeyEvent::character(":", ':', Modifiers::SHIFT);
+        let upper_semicolon = Command::Upper(";".to_owned());
+        let upper_k = Command::Upper("k".to_owned());
 
-        let invalid = command_for_rom_kana(Some("upper-;"), &rule, InputMode::Hiragana);
+        let invalid = command_for_rom_kana(Some(&upper_semicolon), &rule, InputMode::Hiragana);
         assert_eq!(invalid, None);
         assert_eq!(input_text(&event, invalid), Some(":"));
         assert!(!is_upper_input(&event, invalid));
 
-        let valid = command_for_rom_kana(Some("upper-k"), &rule, InputMode::Hiragana);
-        assert_eq!(valid, Some("upper-k"));
+        let valid = command_for_rom_kana(Some(&upper_k), &rule, InputMode::Hiragana);
+        assert_eq!(valid, Some(&upper_k));
         assert_eq!(input_text(&event, valid), Some("k"));
         assert!(is_upper_input(&event, valid));
 
-        let latin = command_for_rom_kana(Some("upper-k"), &rule, InputMode::Latin);
+        let latin = command_for_rom_kana(Some(&upper_k), &rule, InputMode::Latin);
         assert_eq!(latin, None);
         assert_eq!(input_text(&event, latin), Some(":"));
         assert!(!is_upper_input(&event, latin));
@@ -253,12 +272,15 @@ mod tests {
 
     #[test]
     fn first_previous_candidate_returns_to_preedit() {
-        assert!(should_restore_preedit(Some("previous-candidate"), 0));
-        assert!(should_restore_preedit(Some("previous"), 0));
-        assert!(!should_restore_preedit(Some("previous-candidate"), 2));
-        assert!(!should_restore_preedit(Some("previous"), 2));
-        assert!(!should_restore_preedit(Some("delete"), 2));
-        assert!(should_restore_preedit(Some("abort"), 2));
+        assert!(should_restore_preedit(Some(&Command::PreviousCandidate), 0));
+        assert!(should_restore_preedit(Some(&Command::Previous), 0));
+        assert!(!should_restore_preedit(
+            Some(&Command::PreviousCandidate),
+            2
+        ));
+        assert!(!should_restore_preedit(Some(&Command::Previous), 2));
+        assert!(!should_restore_preedit(Some(&Command::Delete), 2));
+        assert!(should_restore_preedit(Some(&Command::Abort), 2));
     }
 
     #[test]
@@ -273,11 +295,11 @@ mod tests {
         ));
         assert!(should_forward_after_selection(
             &KeyEvent::character(":", ':', Modifiers::SHIFT),
-            Some("upper-;")
+            Some(&Command::Upper(";".to_owned()))
         ));
         assert!(!should_forward_after_selection(
             &KeyEvent::named("BackSpace", Modifiers::empty()),
-            Some("delete")
+            Some(&Command::Delete)
         ));
     }
 
@@ -290,23 +312,23 @@ mod tests {
     #[test]
     fn maps_all_five_input_mode_commands() {
         assert_eq!(
-            input_mode_for_command("set-input-mode-hiragana"),
+            input_mode_for_command(&Command::SetInputMode(InputMode::Hiragana)),
             Some(InputMode::Hiragana)
         );
         assert_eq!(
-            input_mode_for_command("set-input-mode-katakana"),
+            input_mode_for_command(&Command::SetInputMode(InputMode::Katakana)),
             Some(InputMode::Katakana)
         );
         assert_eq!(
-            input_mode_for_command("set-input-mode-hankaku-katakana"),
+            input_mode_for_command(&Command::SetInputMode(InputMode::HankakuKatakana)),
             Some(InputMode::HankakuKatakana)
         );
         assert_eq!(
-            input_mode_for_command("set-input-mode-latin"),
+            input_mode_for_command(&Command::SetInputMode(InputMode::Latin)),
             Some(InputMode::Latin)
         );
         assert_eq!(
-            input_mode_for_command("set-input-mode-wide-latin"),
+            input_mode_for_command(&Command::SetInputMode(InputMode::WideLatin)),
             Some(InputMode::WideLatin)
         );
     }
@@ -322,9 +344,13 @@ mod tests {
 
     #[test]
     fn pending_romaji_takes_priority_over_abbrev() {
-        assert!(should_start_abbrev(Some("abbrev"), InputMode::Hiragana, ""));
+        assert!(should_start_abbrev(
+            Some(&Command::Abbrev),
+            InputMode::Hiragana,
+            ""
+        ));
         assert!(!should_start_abbrev(
-            Some("abbrev"),
+            Some(&Command::Abbrev),
             InputMode::Hiragana,
             "z"
         ));
@@ -396,11 +422,11 @@ mod tests {
     #[test]
     fn does_not_change_mode_in_the_middle_of_romaji() {
         assert_eq!(
-            direct_mode_transition(Some("set-input-mode-latin"), ""),
+            direct_mode_transition(Some(&Command::SetInputMode(InputMode::Latin)), ""),
             Some(InputMode::Latin)
         );
         assert_eq!(
-            direct_mode_transition(Some("set-input-mode-latin"), "k"),
+            direct_mode_transition(Some(&Command::SetInputMode(InputMode::Latin)), "k"),
             None
         );
     }

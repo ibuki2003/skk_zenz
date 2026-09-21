@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use bitflags::bitflags;
 
+use crate::Command;
 use crate::rule_file::RuleFileLoader;
 
 mod parser;
@@ -54,7 +55,7 @@ pub struct KeyEvent {
 
 #[derive(Clone, Debug)]
 pub struct Keymap {
-    bindings: Vec<(Binding, String)>,
+    bindings: Vec<(Binding, Command)>,
 }
 
 impl KeyEvent {
@@ -88,7 +89,9 @@ impl Keymap {
                         let command = value.as_str().with_context(|| {
                             format!("keymapの{key:?}は文字列またはnullが必要です")
                         })?;
-                        entries.insert(key.clone(), command.to_owned());
+                        if let Some(command) = Command::parse(command) {
+                            entries.insert(key.clone(), command);
+                        }
                     }
                 }
             }
@@ -100,7 +103,7 @@ impl Keymap {
         Ok(Self { bindings })
     }
 
-    pub fn lookup(&self, event: &KeyEvent) -> Option<&str> {
+    pub fn lookup(&self, event: &KeyEvent) -> Option<&Command> {
         self.bindings
             .iter()
             .filter(|(binding, _)| matches!(binding, Binding::Chord { .. }))
@@ -109,7 +112,7 @@ impl Keymap {
                     .iter()
                     .filter(|(binding, _)| matches!(binding, Binding::Text(_))),
             )
-            .find_map(|(binding, command)| matches(binding, event).then_some(command.as_str()))
+            .find_map(|(binding, command)| matches(binding, event).then_some(command))
     }
 }
 
@@ -162,15 +165,15 @@ mod tests {
         let keymap = Keymap::load("custom", "hiragana", &[root]).unwrap();
         assert_eq!(
             keymap.lookup(&KeyEvent::character("!", '1', Modifiers::SHIFT)),
-            Some("shift-one")
+            Some(&Command::Commit)
         );
         assert_eq!(
             keymap.lookup(&KeyEvent::character("X", 'x', Modifiers::SHIFT)),
-            Some("uppercase-x")
+            Some(&Command::Upper("x".to_owned()))
         );
         assert_eq!(
             keymap.lookup(&KeyEvent::named("Tab", Modifiers::SHIFT)),
-            Some("previous-completion")
+            Some(&Command::PreviousCompletion)
         );
         assert_eq!(
             keymap.lookup(&KeyEvent {
@@ -178,6 +181,10 @@ mod tests {
                 key: Key::Character('q'),
                 modifiers: Modifiers::CONTROL
             }),
+            None
+        );
+        assert_eq!(
+            keymap.lookup(&KeyEvent::character("z", 'z', Modifiers::empty())),
             None
         );
     }

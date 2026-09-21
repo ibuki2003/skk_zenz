@@ -7,20 +7,19 @@ impl Backend {
             .keymaps
             .get(&self.input_state.mode)
             .and_then(|keymap| keymap.lookup(&event))
-            .map(str::to_owned);
-        let command = command_for_rom_kana(
-            command.as_deref(),
-            &self.rom_kana_rule,
-            self.input_state.mode,
-        );
+            .cloned();
+        let command =
+            command_for_rom_kana(command.as_ref(), &self.rom_kana_rule, self.input_state.mode);
         if !matches!(
             command,
-            Some("complete" | "previous-completion" | "previous")
+            Some(Command::Complete | Command::PreviousCompletion | Command::Previous)
         ) {
             self.input_state.completion = None;
         }
-        if matches!(command, Some("next-candidate" | "previous-candidate"))
-            && let Some(active) = &mut self.active_rerank
+        if matches!(
+            command,
+            Some(Command::NextCandidate | Command::PreviousCandidate)
+        ) && let Some(active) = &mut self.active_rerank
         {
             active.selection_touched = true;
         }
@@ -28,16 +27,16 @@ impl Backend {
             && matches!(self.input_state.phase, Phase::Direct)
         {
             match command {
-                Some("abort") => return Ok(self.abort_registration()),
-                Some("delete") if self.input_state.direct_pending.is_empty() => {
+                Some(Command::Abort) => return Ok(self.abort_registration()),
+                Some(Command::Delete) if self.input_state.direct_pending.is_empty() => {
                     return Ok(self.delete_registration_text());
                 }
-                Some("commit" | "commit-unhandled")
+                Some(Command::Commit | Command::CommitUnhandled)
                     if self.input_state.direct_pending.is_empty() =>
                 {
                     return self.finish_registration(command);
                 }
-                Some("complete") if self.input_state.direct_pending.is_empty() => {
+                Some(Command::Complete) if self.input_state.direct_pending.is_empty() => {
                     return self.start_registration_generation();
                 }
                 _ => {}
@@ -69,7 +68,7 @@ impl Backend {
             return Ok((false, None));
         };
         if origin == SelectionOrigin::RegistrationGeneration {
-            return self.confirm_generated_registration(&candidate, Some("commit"), true);
+            return self.confirm_generated_registration(&candidate, Some(&Command::Commit), true);
         }
         self.confirm_candidate(&input, okuri.as_deref(), &candidate)?;
         self.input_state.context.push_str(&candidate.output);
@@ -80,32 +79,32 @@ impl Backend {
     pub(super) fn handle_direct(
         &mut self,
         event: KeyEvent,
-        command: Option<&str>,
+        command: Option<&Command>,
     ) -> Result<(bool, Option<String>)> {
         self.input_state.phase = Phase::Direct;
         if let Some(mode) = direct_mode_transition(command, &self.input_state.direct_pending) {
             return Ok(self.set_input_mode(mode));
         }
         match command {
-            Some("delete") => {
+            Some(Command::Delete) => {
                 return Ok((self.input_state.direct_pending.pop().is_some(), None));
             }
-            Some("commit") | Some("commit-unhandled") => {
+            Some(Command::Commit) | Some(Command::CommitUnhandled) => {
                 let commit = self.finish_direct();
                 if let Some(commit) = &commit {
                     self.input_state.context.push_str(commit);
                 }
-                return Ok((command == Some("commit"), commit));
+                return Ok((command == Some(&Command::Commit), commit));
             }
-            Some("start-preedit") => {
+            Some(Command::StartPreedit) => {
                 self.input_state.phase = Phase::Preedit {
                     stem: Composition::default(),
                     okuri: None,
                 };
                 return Ok((true, None));
             }
-            Some("special-midasi") => return Ok((false, None)),
-            Some("abbrev")
+            Some(Command::SpecialMidasi) => return Ok((false, None)),
+            Some(Command::Abbrev)
                 if should_start_abbrev(
                     command,
                     self.input_state.mode,
@@ -165,7 +164,7 @@ impl Backend {
     pub(super) fn handle_preedit(
         &mut self,
         event: KeyEvent,
-        command: Option<&str>,
+        command: Option<&Command>,
         mut stem: Composition,
         mut okuri: Option<Composition>,
     ) -> Result<(bool, Option<String>)> {
@@ -185,11 +184,11 @@ impl Backend {
             return Ok((true, Some(output)));
         }
         match command {
-            Some("abort") => {
+            Some(Command::Abort) => {
                 self.input_state.phase = Phase::Direct;
                 return Ok((true, None));
             }
-            Some("delete") => {
+            Some(Command::Delete) => {
                 if okuri.as_mut().is_some_and(Composition::pop) {
                     if okuri
                         .as_ref()
@@ -204,22 +203,22 @@ impl Backend {
                 self.input_state.phase = Phase::Preedit { stem, okuri };
                 return Ok((true, None));
             }
-            Some("next-candidate") => {
+            Some(Command::NextCandidate) => {
                 return self.start_lookup(stem, okuri);
             }
-            Some(command @ ("complete" | "previous-completion" | "previous"))
-                if okuri.is_none() =>
-            {
-                stem = self.complete_preedit(stem, command != "complete")?;
+            Some(
+                command @ (Command::Complete | Command::PreviousCompletion | Command::Previous),
+            ) if okuri.is_none() => {
+                stem = self.complete_preedit(stem, command != &Command::Complete)?;
                 self.input_state.phase = Phase::Preedit { stem, okuri };
                 return Ok((true, None));
             }
-            Some("special-midasi") if okuri.is_none() => {
+            Some(Command::SpecialMidasi) if okuri.is_none() => {
                 let mut input = stem.finish(&self.rom_kana_rule, self.input_state.mode.into());
                 input.push('>');
                 return self.start_lookup(Composition::from_output(input), None);
             }
-            Some("commit") | Some("commit-unhandled") => {
+            Some(Command::Commit) | Some(Command::CommitUnhandled) => {
                 let output = composition_output(
                     &self.rom_kana_rule,
                     self.input_state.mode,
@@ -228,7 +227,7 @@ impl Backend {
                 );
                 self.input_state.context.push_str(&output);
                 self.input_state.phase = Phase::Direct;
-                return Ok((command == Some("commit"), Some(output)));
+                return Ok((command == Some(&Command::Commit), Some(output)));
             }
             _ => {}
         }
@@ -297,15 +296,15 @@ impl Backend {
     pub(super) fn handle_abbrev(
         &mut self,
         event: KeyEvent,
-        command: Option<&str>,
+        command: Option<&Command>,
         mut input: String,
     ) -> Result<(bool, Option<String>)> {
         match command {
-            Some("abort") => {
+            Some(Command::Abort) => {
                 self.input_state.phase = Phase::Direct;
                 return Ok((true, None));
             }
-            Some("delete") => {
+            Some(Command::Delete) => {
                 if input.pop().is_some() {
                     self.input_state.phase = Phase::Abbrev { input };
                 } else {
@@ -313,7 +312,7 @@ impl Backend {
                 }
                 return Ok((true, None));
             }
-            Some("next-candidate") => {
+            Some(Command::NextCandidate) => {
                 if input.is_empty() {
                     self.input_state.phase = Phase::Abbrev { input };
                     return Ok((true, None));
@@ -332,10 +331,10 @@ impl Backend {
                 }
                 return Ok((true, None));
             }
-            Some("commit") | Some("commit-unhandled") => {
+            Some(Command::Commit) | Some(Command::CommitUnhandled) => {
                 self.input_state.context.push_str(&input);
                 self.input_state.phase = Phase::Direct;
-                return Ok((command == Some("commit"), Some(input)));
+                return Ok((command == Some(&Command::Commit), Some(input)));
             }
             _ => {}
         }
@@ -351,7 +350,7 @@ impl Backend {
     pub(super) fn handle_selecting(
         &mut self,
         event: KeyEvent,
-        command: Option<&str>,
+        command: Option<&Command>,
         mut selection: CandidateSelection,
     ) -> Result<(bool, Option<String>)> {
         if selection.origin == SelectionOrigin::RegistrationGeneration {
@@ -363,7 +362,7 @@ impl Backend {
             return Ok((true, None));
         }
         match command {
-            Some("next-candidate") => {
+            Some(Command::NextCandidate) => {
                 if let Some(next_cursor) = next_candidate_cursor(
                     selection.cursor,
                     selection.candidates.len(),
@@ -388,7 +387,7 @@ impl Backend {
                     return Ok((true, None));
                 }
             }
-            Some("previous-candidate" | "previous") => {
+            Some(Command::PreviousCandidate | Command::Previous) => {
                 selection.cursor = previous_candidate_cursor(
                     selection.cursor,
                     self.fcitx5.candidate_window_threshold,
@@ -396,7 +395,7 @@ impl Backend {
                 )
                 .expect("cursor 0 is restored to preedit before this branch");
             }
-            Some("purge-candidate") => {
+            Some(Command::PurgeCandidate) => {
                 if let Some(candidate) = selection.candidates.get(selection.cursor).cloned() {
                     self.purge(&candidate)?;
                     selection.candidates.remove(selection.cursor);
@@ -405,14 +404,14 @@ impl Backend {
                         .min(selection.candidates.len().saturating_sub(1));
                 }
             }
-            Some("commit") | Some("commit-unhandled") => {
+            Some(Command::Commit) | Some(Command::CommitUnhandled) => {
                 if let Some(candidate) = self.confirm_selected_candidate(&selection)? {
                     self.input_state.context.push_str(&candidate.output);
                     self.input_state.phase = Phase::Direct;
-                    return Ok((command == Some("commit"), Some(candidate.output)));
+                    return Ok((command == Some(&Command::Commit), Some(candidate.output)));
                 }
             }
-            Some("delete") => {
+            Some(Command::Delete) => {
                 if let Some(candidate) = self.confirm_selected_candidate(&selection)? {
                     let mut output = candidate.output;
                     output.pop();
@@ -421,7 +420,7 @@ impl Backend {
                     return Ok((true, Some(output)));
                 }
             }
-            Some("special-midasi") => {
+            Some(Command::SpecialMidasi) => {
                 if let Some(candidate) = self.confirm_selected_candidate(&selection)? {
                     self.input_state.context.push_str(&candidate.output);
                     self.input_state.phase = Phase::Preedit {
@@ -526,7 +525,11 @@ impl Backend {
                 if selection.origin == SelectionOrigin::RegistrationGeneration {
                     return match candidate {
                         Some(candidate) => self
-                            .confirm_generated_registration(&candidate, Some("commit"), false)
+                            .confirm_generated_registration(
+                                &candidate,
+                                Some(&Command::Commit),
+                                false,
+                            )
                             .map(|(_, output)| output),
                         None => Ok(None),
                     };

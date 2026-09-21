@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
 use crate::candidate::Candidate;
+use crate::command::Command;
 use crate::config::{BackendConfig, CandidateOrder, Fcitx5Config};
 use crate::config_watcher::ConfigWatcher;
 use crate::conversion::ConversionCore;

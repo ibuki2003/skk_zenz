@@ -1,5 +1,6 @@
 mod backend;
 mod candidate;
+mod command;
 mod config;
 mod config_watcher;
 mod conversion;
@@ -17,6 +18,7 @@ pub mod zenz;
 
 pub use backend::Backend;
 pub use candidate::{Candidate, CandidateSource, DictionaryCandidate};
+pub use command::Command;
 pub use config::{BackendConfig, CandidateOrder, CandidateOrderConfig, Fcitx5Config};
 pub use conversion::ConversionCore;
 pub use dictionary::{MemoryUserDictionary, UserDictionary};

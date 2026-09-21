@@ -75,21 +75,21 @@ impl Backend {
     pub(super) fn handle_registration_generation_selection(
         &mut self,
         event: KeyEvent,
-        command: Option<&str>,
+        command: Option<&Command>,
         mut selection: CandidateSelection,
     ) -> Result<(bool, Option<String>)> {
         match command {
-            Some("abort") => {
+            Some(Command::Abort) => {
                 self.cancel_generation();
                 self.input_state.phase = Phase::Direct;
                 return Ok((true, None));
             }
-            Some("delete") => {
+            Some(Command::Delete) => {
                 self.cancel_generation();
                 self.input_state.phase = Phase::Direct;
                 return Ok(self.delete_registration_text());
             }
-            Some("next-candidate" | "complete") => {
+            Some(Command::NextCandidate | Command::Complete) => {
                 let mut next = next_candidate_cursor(
                     selection.cursor,
                     selection.candidates.len(),
@@ -136,7 +136,7 @@ impl Backend {
                     selection.cursor = next;
                 }
             }
-            Some("previous-candidate" | "previous") => {
+            Some(Command::PreviousCandidate | Command::Previous) => {
                 if selection.cursor == 0 {
                     self.cancel_generation();
                     self.input_state.phase = Phase::Direct;
@@ -149,15 +149,18 @@ impl Backend {
                 )
                 .expect("cursor 0 is handled above");
             }
-            Some("commit" | "commit-unhandled") => {
+            Some(Command::Commit | Command::CommitUnhandled) => {
                 if let Some(candidate) = selection.candidates.get(selection.cursor).cloned() {
                     return self.confirm_generated_registration(&candidate, command, true);
                 }
             }
             _ if should_forward_after_selection(&event, command) => {
                 if let Some(candidate) = selection.candidates.get(selection.cursor).cloned() {
-                    let (_, generated) =
-                        self.confirm_generated_registration(&candidate, Some("commit"), true)?;
+                    let (_, generated) = self.confirm_generated_registration(
+                        &candidate,
+                        Some(&Command::Commit),
+                        true,
+                    )?;
                     let (consumed, following) = self.handle_direct(event, command)?;
                     let mut commit = generated.unwrap_or_default();
                     if let Some(following) = following {
@@ -179,7 +182,7 @@ impl Backend {
     pub(super) fn confirm_generated_registration(
         &mut self,
         candidate: &Candidate,
-        command: Option<&str>,
+        command: Option<&Command>,
         append_context: bool,
     ) -> Result<(bool, Option<String>)> {
         let Some(registration) = self.input_state.registrations.pop() else {
@@ -200,7 +203,7 @@ impl Backend {
         self.input_state.phase = Phase::Direct;
         let nested = !self.input_state.registrations.is_empty();
         Ok((
-            nested || command == Some("commit"),
+            nested || command == Some(&Command::Commit),
             Some(candidate.output.clone()),
         ))
     }
@@ -228,7 +231,7 @@ impl Backend {
 
     pub(super) fn finish_registration(
         &mut self,
-        command: Option<&str>,
+        command: Option<&Command>,
     ) -> Result<(bool, Option<String>)> {
         let Some(registration) = self.input_state.registrations.pop() else {
             return Ok((false, None));
@@ -251,7 +254,10 @@ impl Backend {
         self.input_state.mode = registration.mode;
         self.input_state.phase = Phase::Direct;
         let nested = !self.input_state.registrations.is_empty();
-        Ok((nested || command == Some("commit"), Some(registration.text)))
+        Ok((
+            nested || command == Some(&Command::Commit),
+            Some(registration.text),
+        ))
     }
 }
 
