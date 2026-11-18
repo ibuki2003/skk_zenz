@@ -436,7 +436,7 @@ public:
                 std::to_string(update.evaluatedCandidateCount) + "/" +
                 std::to_string(update.totalCandidateCount);
         }
-        panel.setAuxDown(fcitx::Text(auxiliary));
+        panel.setAuxDown(auxiliary.empty() ? fcitx::Text{} : fcitx::Text(auxiliary));
         if (modeChanged && update.preedit[0] == '\0' &&
             update.candidateCount == 0) {
             candidateCount_ = 0;
